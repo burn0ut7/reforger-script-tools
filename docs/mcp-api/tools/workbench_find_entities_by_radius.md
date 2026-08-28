@@ -24,8 +24,7 @@ Find a bounded set of live World Editor entities whose bounds touch a world-spac
       "enum": [
         "all",
         "static",
-        "dynamic",
-        "features"
+        "dynamic"
       ],
       "type": "string"
     },

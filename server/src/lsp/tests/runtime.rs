@@ -326,6 +326,7 @@ fn channel_runtime_coalesces_contiguous_full_sync_changes_before_outline_request
     let mut server = LspServer::new(
         Vec::new(),
         LspServerOptions {
+            workbench_wine_prefix: None,
             external_index_mode: ExternalIndexMode::Loaded,
             log_path: Some(log_path.clone()),
             ..LspServerOptions::default()

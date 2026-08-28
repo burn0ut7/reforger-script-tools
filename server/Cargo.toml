@@ -202,6 +202,9 @@ sha2 = "0.10"
 tokio = { version = "1.49", features = ["macros", "rt-multi-thread", "sync", "time"] }
 url = "2.5"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",

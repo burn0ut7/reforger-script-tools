@@ -104,6 +104,7 @@ fn framed_lsp_smoke_test_handles_open_and_document_symbol() {
         input.as_slice(),
         &mut output,
         LspServerOptions {
+            workbench_wine_prefix: None,
             log_path: None,
             diagnostic_log_path: None,
             addon_source_inventory: None,
@@ -305,6 +306,7 @@ fn framed_lsp_reuses_cached_document_symbols_for_repeated_requests() {
         input.as_slice(),
         &mut output,
         LspServerOptions {
+            workbench_wine_prefix: None,
             log_path: Some(log_path.clone()),
             diagnostic_log_path: None,
             addon_source_inventory: None,
@@ -414,6 +416,7 @@ fn framed_lsp_did_change_defers_document_symbol_projection_until_requested() {
         input.as_slice(),
         &mut output,
         LspServerOptions {
+            workbench_wine_prefix: None,
             log_path: Some(log_path.clone()),
             diagnostic_log_path: None,
             addon_source_inventory: None,
@@ -918,6 +921,7 @@ fn framed_lsp_smoke_test_handles_hover() {
         input.as_slice(),
         &mut output,
         LspServerOptions {
+            workbench_wine_prefix: None,
             log_path: None,
             diagnostic_log_path: None,
             addon_source_inventory: None,
@@ -1008,6 +1012,7 @@ fn framed_lsp_smoke_test_handles_definition() {
         input.as_slice(),
         &mut output,
         LspServerOptions {
+            workbench_wine_prefix: None,
             log_path: None,
             diagnostic_log_path: None,
             addon_source_inventory: None,
@@ -1929,6 +1934,7 @@ fn framed_lsp_uses_cached_analysis_for_repeated_hover() {
         input.as_slice(),
         &mut output,
         LspServerOptions {
+            workbench_wine_prefix: None,
             log_path: Some(log_path.clone()),
             diagnostic_log_path: None,
             addon_source_inventory: None,
@@ -2075,6 +2081,7 @@ fn framed_lsp_did_change_replaces_cached_analysis() {
         input.as_slice(),
         &mut output,
         LspServerOptions {
+            workbench_wine_prefix: None,
             log_path: None,
             diagnostic_log_path: None,
             addon_source_inventory: None,
@@ -2172,6 +2179,7 @@ fn framed_lsp_did_close_removes_cached_document() {
         input.as_slice(),
         &mut output,
         LspServerOptions {
+            workbench_wine_prefix: None,
             log_path: None,
             diagnostic_log_path: None,
             addon_source_inventory: None,
@@ -2271,6 +2279,7 @@ fn framed_lsp_publishes_and_clears_parser_diagnostics() {
         input.as_slice(),
         &mut output,
         LspServerOptions {
+            workbench_wine_prefix: None,
             log_path: None,
             diagnostic_log_path: None,
             addon_source_inventory: None,
@@ -2380,6 +2389,7 @@ fn framed_lsp_ignores_stale_changes_without_regressing_diagnostics_or_symbols() 
         input.as_slice(),
         &mut output,
         LspServerOptions {
+            workbench_wine_prefix: None,
             log_path: Some(log_path.clone()),
             diagnostic_log_path: None,
             addon_source_inventory: None,
@@ -2483,6 +2493,7 @@ fn framed_lsp_smoke_test_handles_debug_hover_request() {
         input.as_slice(),
         &mut output,
         LspServerOptions {
+            workbench_wine_prefix: None,
             log_path: None,
             diagnostic_log_path: None,
             addon_source_inventory: None,
@@ -2570,6 +2581,7 @@ fn framed_lsp_smoke_test_handles_debug_completion_request() {
         input.as_slice(),
         &mut output,
         LspServerOptions {
+            workbench_wine_prefix: None,
             log_path: None,
             diagnostic_log_path: None,
             addon_source_inventory: None,
@@ -2661,6 +2673,7 @@ fn framed_lsp_debug_completion_includes_signature_help_when_inside_call() {
         input.as_slice(),
         &mut output,
         LspServerOptions {
+            workbench_wine_prefix: None,
             log_path: None,
             diagnostic_log_path: None,
             addon_source_inventory: None,

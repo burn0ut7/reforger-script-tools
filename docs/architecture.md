@@ -282,8 +282,11 @@ than a second codec. Detailed protocol evidence and compiler-validation
 acceptance remain in the relevant research journals.
 
 `workbench_launch`, `workbench_stop`, and `workbench_restart` are the explicit
-exception: they are host-process controls, so they use exact Windows process
-identity and filesystem launch context. They are not Workbench Capabilities or
+exception: they are host-process controls, so they use exact host process
+identity and filesystem launch context. Which host runs Workbench — Windows
+natively, or Wine for a Linux host — and how its paths, registry, processes, and
+launch route resolve is owned entirely by `server/src/host_platform.rs`; see
+[Host platform](host-platform.md). They are not Workbench Capabilities or
 sources of live editor truth; once Workbench is running, normal MCP operations
 use only the typed Gateway route. The read-only `workbench_list_windows` and
 `workbench_capture_window` tools are a separate host-process observation path:
@@ -300,9 +303,10 @@ not a generic method or expression evaluator. The handler owns full
 parent-aware local/world conversion and native undo actions; MCP owns bounded
 schemas, explicit coordinate spaces, and result framing.
 
-The optional managed handler package lives under the current Windows user's
-`Documents\My Games\ArmaReforgerWorkbench\profile\scripts\WorkbenchGame\reforger-script-tools`
-directory. The VS Code extension owns a one-time first-install prompt
+The optional managed handler package lives under the Windows user profile
+Workbench writes to, at
+`Documents\My Games\ArmaReforgerWorkbench\profile\scripts\WorkbenchGame\reforger-script-tools`.
+On a Wine host that profile is the one inside the resolved prefix. The VS Code extension owns a one-time first-install prompt
 controlled by the unified `reforgerScriptTools.workbench.enabled` setting,
 which defaults to false. Approval enables that setting and stores the
 resulting approval as an internal durable extension state. On an installation
@@ -345,10 +349,13 @@ validation as the Workbench authority while making the reviewed source directly
 inspectable.
 The extension's consented bootstrap operation ensures Workbench's
 `NetAPI_Enabled` value is `REG_SZ "1"` and registers the per-user
-`enfusion://` Windows URL protocol beneath
-`HKCU\Software\Classes\enfusion`, including the quoted Workbench launch command
-resolved from the authoritative Steam installations; repeated writes are
-idempotent. A later approved activation verifies that complete registration and
+`enfusion://` URL protocol beneath `HKCU\Software\Classes\enfusion`, including
+the quoted Workbench launch command resolved from the authoritative Steam
+installations; repeated writes are idempotent. On a Wine host both values live
+in the prefix's own `user.reg` hive, bootstrap also registers the host desktop
+handler that resolves an `enfusion` link followed outside the prefix, and a
+write is refused while a wineserver holds the prefix rather than being made and
+discarded. A later approved activation verifies that complete registration and
 reruns bootstrap only when it is missing or stale. Bootstrap then installs or
 updates the managed bridge without requiring an existing NET API connection. If Workbench
 is already running, the extension asks the user to restart it. If it is closed,

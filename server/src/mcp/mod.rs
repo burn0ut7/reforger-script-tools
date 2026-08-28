@@ -930,7 +930,6 @@ enum McpWorkbenchEntityQueryScope {
     All,
     Static,
     Dynamic,
-    Features,
 }
 
 impl McpWorkbenchEntityQueryScope {
@@ -939,7 +938,6 @@ impl McpWorkbenchEntityQueryScope {
             Self::All => "all",
             Self::Static => "static",
             Self::Dynamic => "dynamic",
-            Self::Features => "features",
         }
     }
 }

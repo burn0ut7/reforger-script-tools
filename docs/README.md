@@ -33,6 +33,9 @@ implementation slice is progress, not a completed ticket.
 - [Architecture](architecture.md): module boundaries and runtime invariants.
 - [Language engine](language-engine.md): Rust analysis and LSP contract.
 - [Development](development.md): build, test, and local development workflow.
+- [Host platform](host-platform.md): the Windows and Wine hosts that run
+  Workbench, path-space translation, and host-owned process, registry, and
+  launch routes.
 - [MCP API Reference](mcp-api.md): generated AI usage guide and categorized
   router to one exact generated contract per tool under `mcp-api/tools/`.
 - [MCP Runtime](mcp-runtime.md): process startup, parser-owned cache

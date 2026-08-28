@@ -61,7 +61,7 @@ class RST_WorkbenchSampleTerrain : NetApiHandler
 	{
 		RST_WorkbenchSampleTerrainRequest typedRequest = RST_WorkbenchSampleTerrainRequest.Cast(request);
 		RST_WorkbenchSampleTerrainResponse response = new RST_WorkbenchSampleTerrainResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		response.centerX = typedRequest.centerX;
 		response.centerZ = typedRequest.centerZ;

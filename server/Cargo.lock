@@ -646,6 +646,7 @@ dependencies = [
  "ahash",
  "base64",
  "flate2",
+ "libc",
  "png",
  "regex",
  "rmcp",

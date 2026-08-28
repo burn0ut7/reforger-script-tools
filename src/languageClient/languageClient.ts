@@ -43,6 +43,7 @@ import {
 import {
   workbenchConfig,
   workbenchDefaults,
+  workbenchWinePrefixArguments,
   externalIndexModes,
   type ExternalIndexMode,
 } from "../extensionConfig/workbench";
@@ -504,6 +505,7 @@ async function startLanguageClient(
     ),
     "--external-index-mode",
     externalIndexMode,
+    ...workbenchWinePrefixArguments(),
     ...bracketColoringServerArguments(bracketColoring),
   ];
   if (diagnosticsEnabled()) {

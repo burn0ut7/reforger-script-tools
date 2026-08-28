@@ -386,6 +386,7 @@ export interface McpSearchClientOptions {
 	workspaceScripts: string[];
 	dependencyProjectFiles: string[];
 	officialWikiRoot: string;
+	workbenchWinePrefix?: string;
 }
 
 interface JsonRpcResult {

@@ -46,7 +46,7 @@ class RST_WorkbenchComponentsBase : NetApiHandler
 	RST_WorkbenchComponentsResponse Response()
 	{
 		RST_WorkbenchComponentsResponse response = new RST_WorkbenchComponentsResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		return response;
 	}

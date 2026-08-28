@@ -266,7 +266,7 @@ class RST_WorkbenchInspectEntity : NetApiHandler
 	{
 		RST_WorkbenchInspectEntityRequest typedRequest = RST_WorkbenchInspectEntityRequest.Cast(request);
 		RST_WorkbenchInspectEntityResponse response = new RST_WorkbenchInspectEntityResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
 		if (!worldEditor)

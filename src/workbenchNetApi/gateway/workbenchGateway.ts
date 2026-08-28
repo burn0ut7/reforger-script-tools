@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import * as path from "node:path";
 import { diagnostic } from "../../diagnostics/diagnostics";
+import { workbenchWinePrefixArguments } from "../../extensionConfig/workbench";
 
 const defaultGetStatusDeadlineMs = 1_500;
 const defaultValidateScriptsDeadlineMs = 120_000;
@@ -771,6 +772,7 @@ export async function invokeWorkbenchPrivateApi(
         String(endpoint.port),
         "--deadline-ms",
         String(deadlineMs),
+        ...workbenchWinePrefixArguments(),
       ],
       {
         timeout: deadlineMs + 500,

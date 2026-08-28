@@ -10,6 +10,7 @@ import {
 import { languageClientIndexCache, languageClientSchemes } from '../extensionConfig/languageClient';
 import { searchCommands, searchContext, searchLimits } from '../extensionConfig/search';
 import {
+	readWorkbenchWinePrefix,
 	workbenchConfig,
 } from '../extensionConfig/workbench';
 import {
@@ -1031,6 +1032,7 @@ async function createClient(context: vscode.ExtensionContext): Promise<McpSearch
 		workspaceScripts: await discoverWorkspaceScriptRoots(),
 		dependencyProjectFiles: authoritativeWorkbenchScope ? [] : await discoverWorkspaceProjectFiles(),
 		officialWikiRoot: path.join(context.extensionPath, 'data', 'official-wiki'),
+		workbenchWinePrefix: readWorkbenchWinePrefix(),
 	});
 }
 

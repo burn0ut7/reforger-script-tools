@@ -49,7 +49,7 @@ class RST_WorkbenchViewportContext : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchViewportContextResponse response = new RST_WorkbenchViewportContextResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		WorldEditor e = Workbench.GetModule(WorldEditor);
 		if (!e || !e.GetApi() || !e.GetApi().GetWorld())

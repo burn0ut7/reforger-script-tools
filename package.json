@@ -204,6 +204,13 @@
           "title": "Workbench NET API: Save and Validate On Idle",
           "description": "Save the active Enforce Script and validate in Workbench after three seconds without typing. Disable to validate only after explicit saves or the Validate Scripts command."
         },
+        "reforgerScriptTools.workbench.winePrefix": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "title": "Workbench: Wine Prefix",
+          "markdownDescription": "Absolute path to the Wine prefix that runs Workbench on a host that does not run it natively, such as `~/.steam/steam/steamapps/compatdata/1874910/pfx`. Leave empty to resolve Steam's Proton compatibility data for the Arma Reforger Tools app, or the `WINEPREFIX` environment variable, automatically. Ignored on Windows."
+        },
         "reforgerScriptTools.workbench.externalIndexMode": {
           "type": "string",
           "enum": [

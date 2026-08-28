@@ -199,7 +199,7 @@ class RST_WorkbenchEntityMutationBase : NetApiHandler
 	RST_WorkbenchEntityMutationResponse Response()
 	{
 		RST_WorkbenchEntityMutationResponse response = new RST_WorkbenchEntityMutationResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		response.activeLayerId = -1;
 		return response;
@@ -571,7 +571,7 @@ class RST_WorkbenchTransformEntity : RST_WorkbenchEntityMutationBase
 	{
 		RST_WorkbenchEntityMutationRequest r = RST_WorkbenchEntityMutationRequest.Cast(request);
 		RST_WorkbenchEntityTransformResponse response = new RST_WorkbenchEntityTransformResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		response.scale = 0;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);

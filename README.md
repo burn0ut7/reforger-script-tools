@@ -49,6 +49,32 @@ trademarks or registered trademarks of Bohemia Interactive a.s.
 The extension recognizes `.c` files under `Scripts` or `scripts` directories as
 Enfusion Script.
 
+## Platform Support
+
+Windows and Linux are both supported, and everything the extension does with the
+Enfusion Script language itself — syntax, semantic coloring, completion, hover,
+go to definition, symbols, formatting, indexing, search, and the MCP server —
+works the same on either.
+
+Workbench is a Windows application. On Windows it runs natively. On Linux it runs
+inside a Wine prefix, and the extension resolves that prefix automatically from
+Steam's Proton compatibility data for the Arma Reforger Tools app, or from
+`WINEPREFIX`. Set **Workbench: Wine Prefix** if you keep Workbench in a prefix
+the extension cannot find. Paths are translated in both directions, so compiler
+findings open the right files and add-on sources are indexed from the right
+places. Launching, stopping, and restarting Workbench go through Steam for a
+Proton prefix and through `wine` for a prefix you maintain, and `enfusion://`
+links opened from the Search UI are registered with your desktop so they reach
+Workbench.
+
+Two Workbench-related things stay Windows-only, because their hosts expose no
+route to them under Wine: window capture (`workbench_capture_window` and
+`workbench_list_windows`), and the suggest-widget UI Automation diagnostic
+report. Everything else, including compiler validation, is available on both.
+
+If Workbench is not installed at all, the language and indexing features still
+work; only the Workbench integration reports itself unavailable.
+
 ## Workbench Integration
 
 Workbench integration is disabled by default. On first activation, the
@@ -89,6 +115,7 @@ Tools`, or add the keys to `settings.json`.
 | `reforgerScriptTools.workbench.host` | `"127.0.0.1"` | Workbench NET API loopback host. IPv4 loopback addresses and `::1` are accepted. |
 | `reforgerScriptTools.workbench.port` | `5775` | Workbench NET API port, from `1` through `65535`. The extension does not scan other ports. |
 | `reforgerScriptTools.workbench.saveOnIdle` | `true` | After three seconds without typing, save the active Enforce Script and validate in Workbench. Disable to validate only on explicit save or command. |
+| `reforgerScriptTools.workbench.winePrefix` | `""` | Absolute path to the Wine prefix that runs Workbench on a host that does not run it natively. Leave empty to resolve Steam's Proton compatibility data for the Arma Reforger Tools app, or `WINEPREFIX`, automatically. Ignored on Windows. |
 | `reforgerScriptTools.workbench.externalIndexMode` | `"loaded"` | Choose cached external indexes: `"loaded"` for the opened project's dependencies, `"all"` for every compatible cached index, or `"none"` for workspace scripts only. |
 
 For the default `"semantic"` bracket mode, the extension contributes and

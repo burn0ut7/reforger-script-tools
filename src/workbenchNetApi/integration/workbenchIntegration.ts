@@ -13,7 +13,10 @@ import {
 // current consent prompt instead of inheriting the earlier late-startup gate.
 const approvalStateKey = 'workbenchIntegrationApprovedV3';
 const installChoice = 'Enable Workbench Integration';
-const installFailureMessage = 'Reforger Workbench integration could not be installed.';
+// Where Workbench runs inside a Wine prefix, its options live in a registry
+// that only accepts a write while no wineserver holds the prefix.
+const installFailureMessage =
+	'Reforger Workbench integration could not be installed. If Workbench is open, close it and reload the window.';
 const restartMessage = 'Reforger Workbench integration was updated. Restart Workbench to activate it.';
 
 export function workbenchStartupPolicy(

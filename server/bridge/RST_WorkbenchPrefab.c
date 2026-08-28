@@ -199,7 +199,7 @@ class RST_WorkbenchInspectPrefab : NetApiHandler
 	{
 		RST_WorkbenchPrefabRequest r = RST_WorkbenchPrefabRequest.Cast(request);
 		RST_WorkbenchPrefabResponse response = new RST_WorkbenchPrefabResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor || !editor.GetApi())
@@ -590,7 +590,7 @@ class RST_WorkbenchPrefabResourceProof : NetApiHandler
 	{
 		RST_WorkbenchPrefabResourceProofRequest r = RST_WorkbenchPrefabResourceProofRequest.Cast(request);
 		RST_WorkbenchPrefabResourceProofResponse response = new RST_WorkbenchPrefabResourceProofResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		response.resourceName = r.resourceName;
 		if (r.resourceName.IsEmpty())
@@ -717,7 +717,7 @@ class RST_WorkbenchAddPrefabResourceComponent : NetApiHandler
 	{
 		RST_WorkbenchPrefabResourceComponentRequest r = RST_WorkbenchPrefabResourceComponentRequest.Cast(request);
 		RST_WorkbenchPrefabResourceComponentResponse response = new RST_WorkbenchPrefabResourceComponentResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		response.resourceName = r.resourceName;
 		response.componentIndex = -1;
@@ -808,7 +808,7 @@ class RST_WorkbenchRemovePrefabResourceComponent : NetApiHandler
 	{
 		RST_WorkbenchPrefabResourceComponentRemovalRequest r = RST_WorkbenchPrefabResourceComponentRemovalRequest.Cast(request);
 		RST_WorkbenchPrefabResourceComponentResponse response = new RST_WorkbenchPrefabResourceComponentResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		response.resourceName = r.resourceName;
 		response.componentIndex = r.componentIndex;
@@ -918,7 +918,7 @@ class RST_WorkbenchSetPrefabResourceProperty : RST_WorkbenchEntityMutationBase
 	{
 		RST_WorkbenchPrefabResourcePropertyRequest r = RST_WorkbenchPrefabResourcePropertyRequest.Cast(request);
 		RST_WorkbenchPrefabResourcePropertyResponse response = new RST_WorkbenchPrefabResourcePropertyResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		response.resourceName = r.resourceName;
 		if (r.resourceName.IsEmpty() || r.propertyName.IsEmpty())

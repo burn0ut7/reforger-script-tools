@@ -63,7 +63,7 @@ class RST_WorkbenchSpline : NetApiHandler
 	RST_WorkbenchSplineResponse Response()
 	{
 		RST_WorkbenchSplineResponse response = new RST_WorkbenchSplineResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		response.sampleSpace = "local";
 		return response;

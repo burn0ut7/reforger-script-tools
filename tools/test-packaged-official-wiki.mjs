@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { unzipSync } from 'fflate';
@@ -13,10 +13,17 @@ const gameDataScripts = join(sandbox, 'Game Data é space', 'scripts');
 
 try {
   run('npx', ['--no-install', 'vsce', 'package', '--no-dependencies', '--out', vsix]);
-  for (const [path, contents] of Object.entries(unzipSync(readFileSync(vsix)))) {
+  const archive = readFileSync(vsix);
+  const recordedModes = recordedUnixModes(archive);
+  for (const [path, contents] of Object.entries(unzipSync(archive))) {
     const output = join(installed, path);
     mkdirSync(dirname(output), { recursive: true });
     writeFileSync(output, contents);
+    // VS Code restores each entry's recorded Unix mode when it installs a
+    // VSIX. Plain extraction does not, so restore it here as well; otherwise
+    // this runs against a server the real install would have left runnable.
+    const mode = recordedModes.get(path);
+    if (mode !== undefined) writeMode(output, mode);
   }
   mkdirSync(clientWorkingDirectory, { recursive: true });
   mkdirSync(gameDataScripts, { recursive: true });
@@ -29,7 +36,14 @@ try {
   }
   if (!Object.hasOwn(installedPages, 'index.md')) throw new Error('The authoritative index.md is missing from the VSIX.');
 
-  const executable = join(installed, 'extension', 'dist', 'server', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'reforger_language_server.exe' : 'reforger_language_server');
+  const serverEntry = `extension/dist/server/${process.platform}-${process.arch}/${process.platform === 'win32' ? 'reforger_language_server.exe' : 'reforger_language_server'}`;
+  // A host that carries an executable bit must find it recorded in the VSIX:
+  // VS Code installs exactly what the archive records, and a server without it
+  // cannot be started by the installed extension.
+  if (process.platform !== 'win32' && ((recordedModes.get(serverEntry) ?? 0) & 0o111) === 0) {
+    throw new Error(`The packaged language server is not recorded as executable (${serverEntry}); the installed extension could not start it.`);
+  }
+  const executable = join(installed, ...serverEntry.split('/'));
   const wikiSession = runMcp(executable, [], clientWorkingDirectory, [
     toolListRequest(2),
     toolCallRequest(3, 'official_wiki_status', {}),
@@ -108,6 +122,44 @@ try {
   console.log(`Verified ${Object.keys(sourcePages).length} byte-identical packaged Markdown files, 87 installed tools, and independent workspace and Official Wiki workflows.`);
 } finally {
   rmSync(sandbox, { recursive: true, force: true });
+}
+
+/**
+ * The Unix file mode each archive entry records, read from the ZIP central
+ * directory. Entries written by a host without file modes record none.
+ */
+function recordedUnixModes(archive) {
+  const modes = new Map();
+  const end = findEndOfCentralDirectory(archive);
+  if (end === undefined) throw new Error('The VSIX has no ZIP end-of-central-directory record.');
+  const entries = archive.readUInt16LE(end + 10);
+  if (entries === 0xffff) throw new Error('The VSIX uses ZIP64, which this verification does not read.');
+  let offset = archive.readUInt32LE(end + 16);
+  for (let entry = 0; entry < entries; entry += 1) {
+    if (archive.readUInt32LE(offset) !== 0x02014b50) throw new Error('The VSIX central directory is malformed.');
+    const hostSystem = archive.readUInt8(offset + 5);
+    const externalAttributes = archive.readUInt32LE(offset + 38);
+    const nameLength = archive.readUInt16LE(offset + 28);
+    const extraLength = archive.readUInt16LE(offset + 30);
+    const commentLength = archive.readUInt16LE(offset + 32);
+    const name = archive.toString('utf8', offset + 46, offset + 46 + nameLength);
+    // Host system 3 is Unix; only those entries carry a file mode.
+    if (hostSystem === 3) modes.set(name, (externalAttributes >>> 16) & 0o7777);
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  return modes;
+}
+
+function findEndOfCentralDirectory(archive) {
+  for (let offset = archive.length - 22; offset >= 0; offset -= 1) {
+    if (archive.readUInt32LE(offset) === 0x06054b50) return offset;
+  }
+  return undefined;
+}
+
+function writeMode(path, mode) {
+  if (process.platform === 'win32' || mode === 0) return;
+  chmodSync(path, mode);
 }
 
 function markdownFiles(directory) {

@@ -1,3 +1,8 @@
+use crate::host_platform::process::{self, CloseMode, ProcessIdentity};
+use crate::host_platform::{
+    self, workbench_host, WorkbenchHost, REFORGER_GAME_APP_ID, REFORGER_TOOLS_APP_ID,
+    WORKBENCH_EXECUTABLE_NAME,
+};
 use crate::workbench_bridge::*;
 use crate::workbench_capture::{
     self, CaptureError, CaptureRegion, CapturedWindow, WorkbenchWindowList, DEFAULT_MAX_DIMENSION,
@@ -18,6 +23,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// How long a launch waits for the started Workbench process to appear. A Wine
+/// host reaches Workbench through Steam and Proton, which run their own startup
+/// in front of it.
+const LAUNCH_PROCESS_DEADLINE: Duration = Duration::from_secs(120);
+/// How long a launch then waits for Workbench to answer the NET API.
+const NET_API_READY_DEADLINE: Duration = Duration::from_secs(90);
 
 #[derive(Debug, Clone)]
 pub struct WorkbenchGatewayOptions {
@@ -122,10 +134,12 @@ pub struct WorkbenchFailure {
 #[derive(Debug, Clone)]
 pub struct WorkbenchGateway {
     options: WorkbenchGatewayOptions,
+    /// The host whose path space the compiler reports its file locations in.
+    host: WorkbenchHost,
     request_lock: Arc<Mutex<()>>,
 }
 
-pub const WORKBENCH_BRIDGE_VERSION: &str = "1.52.12";
+pub const WORKBENCH_BRIDGE_VERSION: &str = "1.52.13";
 pub const WORKBENCH_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 const WORKBENCH_REQUIRED_ADDONS: &str = "58D0FB3206B6F859,5614BBCCBB55ED1C";
 
@@ -138,6 +152,9 @@ pub enum WorkbenchInstallAuthorization {
 #[derive(Debug, Clone)]
 pub struct WorkbenchControllerOptions {
     pub gateway: WorkbenchGatewayOptions,
+    /// The Wine prefix hosting Workbench, when the host does not run it
+    /// natively and the extension has been pointed at a specific prefix.
+    pub wine_prefix: Option<PathBuf>,
     pub user_directory: Option<PathBuf>,
     pub profile_directory: Option<PathBuf>,
     pub game_directory: Option<PathBuf>,
@@ -149,6 +166,7 @@ impl Default for WorkbenchControllerOptions {
     fn default() -> Self {
         Self {
             gateway: WorkbenchGatewayOptions::default(),
+            wine_prefix: None,
             user_directory: None,
             profile_directory: None,
             game_directory: None,
@@ -1175,6 +1193,9 @@ pub struct WorkbenchProcessResult {
 #[derive(Debug, Clone)]
 pub struct WorkbenchController {
     options: WorkbenchControllerOptions,
+    /// The host this controller addresses Workbench on. Resolved once so that
+    /// every path this controller exchanges with Workbench uses one mapping.
+    host: WorkbenchHost,
     gateway: WorkbenchGateway,
     observed_processes: Arc<Mutex<HashSet<ProcessIdentity>>>,
     validation_snapshot: Arc<Mutex<Option<(String, WorkbenchValidation)>>>,
@@ -1186,9 +1207,18 @@ pub struct WorkbenchController {
 
 impl WorkbenchController {
     pub fn new(options: WorkbenchControllerOptions) -> Self {
-        let gateway = WorkbenchGateway::new(options.gateway.clone());
+        let host = match options.wine_prefix.as_deref() {
+            Some(prefix) => WorkbenchHost::detect(Some(prefix)),
+            None => workbench_host().clone(),
+        };
+        Self::with_host(options, host)
+    }
+
+    fn with_host(options: WorkbenchControllerOptions, host: WorkbenchHost) -> Self {
+        let gateway = WorkbenchGateway::with_host(options.gateway.clone(), host.clone());
         Self {
             options,
+            host,
             gateway,
             observed_processes: Arc::new(Mutex::new(HashSet::new())),
             validation_snapshot: Arc::new(Mutex::new(None)),
@@ -1228,7 +1258,7 @@ impl WorkbenchController {
             .map(|failure| failure_code(failure.code).to_string());
         let native = native_result.ok();
         let mut bridge = self.bridge_disk_status(&paths.bridge_directory);
-        let enfusion_protocol_registered = enfusion_protocol_registered(&paths);
+        let enfusion_protocol_registered = enfusion_protocol_registered(&self.host, &paths);
         if native.is_some() {
             if !bridge.installed {
                 bridge.installation_available = paths.profile.is_dir();
@@ -1238,13 +1268,13 @@ impl WorkbenchController {
             game: path_status(paths.game, &paths.game_source),
             tools: path_status(paths.tools, &paths.tools_source),
             executable: path_status(paths.executable, &paths.executable_source),
-            profile: path_status(Some(paths.profile), "windows-user"),
+            profile: path_status(Some(paths.profile), paths.profile_source),
             bridge_directory: paths.bridge_directory,
             enfusion_protocol_registered,
             native,
             native_failure,
             bridge,
-            support_log: path_status(Some(self.integration_log_path()), "local-app-data"),
+            support_log: path_status(Some(self.integration_log_path()), "host-support-log"),
         };
         self.log_event_timed(
             "status",
@@ -1306,23 +1336,12 @@ impl WorkbenchController {
             .map_err(|_| failure(WorkbenchFailureCode::Unavailable))?;
         let started = Instant::now();
         let paths = self.paths();
-        let enfusion_protocol_write_performed =
-            register_enfusion_protocol(&paths).map_err(|error| {
-                self.correlate_failure_details(
-                    "integration-bootstrap",
-                    "enfusion-protocol-registration-failed",
-                    failure(WorkbenchFailureCode::Unavailable),
-                    json!({"errorKind": format!("{:?}", error.kind())}),
-                )
+        let enfusion_protocol_write_performed = register_enfusion_protocol(&self.host, &paths)
+            .map_err(|error| {
+                self.registry_write_failure("enfusion-protocol-registration-failed", &error)
             })?;
-        let net_api_write_performed = enable_workbench_net_api().map_err(|error| {
-            self.correlate_failure_details(
-                "integration-bootstrap",
-                "net-api-enable-failed",
-                failure(WorkbenchFailureCode::Unavailable),
-                json!({"errorKind": format!("{:?}", error.kind())}),
-            )
-        })?;
+        let net_api_write_performed = enable_workbench_net_api(&self.host)
+            .map_err(|error| self.registry_write_failure("net-api-enable-failed", &error))?;
         let result = self.prepare_bridge_locked(true)?;
         self.log_event_timed(
             "integration-bootstrap",
@@ -1348,6 +1367,25 @@ impl WorkbenchController {
         })
     }
 
+    /// Reports a failed write to the registry Workbench reads its options from.
+    ///
+    /// A prefix that a wineserver is holding is recorded as its own outcome:
+    /// the write is refused rather than made and discarded, and the user has to
+    /// close Workbench before setup can complete.
+    fn registry_write_failure(&self, outcome: &str, error: &std::io::Error) -> WorkbenchFailure {
+        let busy = error.kind() == std::io::ErrorKind::ResourceBusy;
+        self.correlate_failure_details(
+            "integration-bootstrap",
+            if busy { "wine-prefix-in-use" } else { outcome },
+            failure(WorkbenchFailureCode::Unavailable),
+            json!({
+                "errorKind": format!("{:?}", error.kind()),
+                "operation": outcome,
+                "workbenchHost": self.host.source(),
+            }),
+        )
+    }
+
     pub fn maintain_integration(
         &self,
     ) -> Result<WorkbenchIntegrationBootstrapResult, WorkbenchFailure> {
@@ -1366,9 +1404,9 @@ impl WorkbenchController {
     }
 
     pub fn process_status(&self) -> WorkbenchProcessStatus {
-        let process = workbench_processes().into_iter().next();
+        let process = process::workbench_processes().into_iter().next();
         let process_id = process.as_ref().map(|value| value.id);
-        let project_path = process.and_then(workbench_project_gproj);
+        let project_path = process.and_then(|process| workbench_project_gproj(&self.host, process));
         WorkbenchProcessStatus {
             is_open: process_id.is_some(),
             process_id,
@@ -1967,9 +2005,43 @@ impl WorkbenchController {
                     json!({"handler": "RST_WorkbenchLoadedAddonGraph"}),
                 )
             })?;
-        let current_project_file = (!raw.current_project_file.is_empty())
-            .then(|| PathBuf::from(&raw.current_project_file));
+        let host = &self.host;
+        let current_project_file = match raw.current_project_file.as_str() {
+            "" => None,
+            value => Some(host.to_host_path(value).ok_or_else(|| {
+                self.correlate_failure_details(
+                    "loaded_addon_graph",
+                    "unresolved-workbench-path",
+                    failure(WorkbenchFailureCode::Protocol),
+                    json!({
+                        "handler": "RST_WorkbenchLoadedAddonGraph",
+                        "workbenchHost": host.source(),
+                    }),
+                )
+            })?),
+        };
+        for addon in &mut addons {
+            if addon.source_root.as_os_str().is_empty() {
+                continue;
+            }
+            addon.source_root = addon
+                .source_root
+                .to_str()
+                .and_then(|value| host.to_host_path(value))
+                .ok_or_else(|| {
+                    self.correlate_failure_details(
+                        "loaded_addon_graph",
+                        "unresolved-workbench-path",
+                        failure(WorkbenchFailureCode::Protocol),
+                        json!({
+                            "handler": "RST_WorkbenchLoadedAddonGraph",
+                            "workbenchHost": host.source(),
+                        }),
+                    )
+                })?;
+        }
         resolve_loaded_addon_roots(
+            host,
             &mut addons,
             current_project_file.as_deref(),
             &self.paths().profile,
@@ -2616,10 +2688,7 @@ impl WorkbenchController {
     ) -> Result<WorkbenchEntityRadiusQuery, WorkbenchFailure> {
         if !(0.01..=50_000.0).contains(&options.radius_meters)
             || !(1..=100).contains(&options.limit)
-            || !matches!(
-                options.query_scope.as_str(),
-                "all" | "static" | "dynamic" | "features"
-            )
+            || !matches!(options.query_scope.as_str(), "all" | "static" | "dynamic")
         {
             return Err(failure(WorkbenchFailureCode::Protocol));
         }
@@ -4697,7 +4766,7 @@ impl WorkbenchController {
                 .find(|process| process.id == process_id)
                 .copied()
         });
-        let current = workbench_processes();
+        let current = process::workbench_processes();
         if observed.is_none() || !current.iter().any(|process| Some(*process) == observed) {
             return Err(self.correlate_failure_details(
                 operation,
@@ -4757,11 +4826,11 @@ impl WorkbenchController {
                 ));
             }
         }
-        let existing = workbench_processes();
+        let existing = process::workbench_processes();
         self.observe_processes(&existing);
         if let Some(process) = existing.first() {
             if let Some(requested_project) = project {
-                let observed_project = workbench_project_gproj(*process);
+                let observed_project = workbench_project_gproj(&self.host, *process);
                 if observed_project
                     .as_deref()
                     .is_none_or(|observed| !paths_equal(observed, requested_project))
@@ -4779,7 +4848,7 @@ impl WorkbenchController {
                 }
             }
             let net_api_connected =
-                self.native_status().is_ok() || self.wait_for_net_api(Duration::from_secs(90));
+                self.native_status().is_ok() || self.wait_for_net_api(NET_API_READY_DEADLINE);
             if !net_api_connected {
                 return Err(self.correlate_failure_details(
                     "launch",
@@ -4820,63 +4889,81 @@ impl WorkbenchController {
                     json!({"executableValidated": false}),
                 )
             })?;
-        let working_directory = executable.parent().map(std::path::Path::to_path_buf);
         let profile_root = self
             .options
             .profile_directory
             .as_deref()
             .and_then(std::path::Path::parent);
-        let arguments = workbench_launch_arguments(project, paths.game.as_deref(), profile_root)
+        let arguments =
+            workbench_launch_arguments(&self.host, project, paths.game.as_deref(), profile_root)
+                .ok_or_else(|| {
+                    self.correlate_failure_details(
+                        "launch",
+                        "base-game-addon-directory-unavailable",
+                        failure(WorkbenchFailureCode::Unavailable),
+                        json!({
+                            "project": project,
+                            "gameDirectoryDiscovered": paths.game.is_some(),
+                            "gameDirectorySource": paths.game_source,
+                            "workbenchHost": self.host.source(),
+                        }),
+                    )
+                })?;
+        let launch = self
+            .host
+            .workbench_launch(&executable, &arguments)
             .ok_or_else(|| {
                 self.correlate_failure_details(
                     "launch",
-                    "base-game-addon-directory-unavailable",
+                    "launch-route-unavailable",
                     failure(WorkbenchFailureCode::Unavailable),
-                    json!({
-                        "project": project,
-                        "gameDirectoryDiscovered": paths.game.is_some(),
-                        "gameDirectorySource": paths.game_source,
-                    }),
+                    json!({"workbenchHost": self.host.source()}),
                 )
             })?;
-        let mut command = std::process::Command::new(executable);
+        let launch_source = launch.source;
+        let mut command = launch.command;
         command
-            .args(arguments)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        if let Some(working_directory) = working_directory {
-            command.current_dir(working_directory);
-        }
-        let child = command.spawn().map_err(|error| {
+        command.spawn().map_err(|error| {
             self.correlate_failure_details(
                 "launch",
                 "process-start-failed",
                 failure(WorkbenchFailureCode::Unavailable),
-                json!({"errorKind": format!("{:?}", error.kind())}),
+                json!({
+                    "errorKind": format!("{:?}", error.kind()),
+                    "launchSource": launch_source,
+                }),
             )
         })?;
-        if let Some(process) = workbench_processes()
-            .into_iter()
-            .find(|process| process.id == child.id())
-        {
+        // Steam and Wine both hand Workbench off to a process the launcher
+        // owns, so the started Workbench is the new process identity rather
+        // than the child that was spawned.
+        let process = self.wait_for_new_workbench_process(&existing, LAUNCH_PROCESS_DEADLINE);
+        if let Some(process) = process {
             self.observe_processes(&[process]);
         }
-        let net_api_connected = self.wait_for_net_api(Duration::from_secs(90));
+        let net_api_connected = process.is_some() && self.wait_for_net_api(NET_API_READY_DEADLINE);
         if !net_api_connected {
             return Err(self.correlate_failure_details(
                 "launch",
-                "net-api-timeout",
+                if process.is_some() {
+                    "net-api-timeout"
+                } else {
+                    "process-not-observed"
+                },
                 failure(WorkbenchFailureCode::Timeout),
                 json!({
-                    "processId": child.id(),
+                    "processId": process.map(|process| process.id),
                     "alreadyRunning": false,
-                    "processStillRunning": workbench_process_ids().contains(&child.id()),
+                    "launchSource": launch_source,
+                    "workbenchHost": self.host.source(),
                 }),
             ));
         }
         let result = WorkbenchProcessResult {
-            process_id: Some(child.id()),
+            process_id: process.map(|process| process.id),
             already_running: false,
             net_api_connected,
             exited: false,
@@ -4942,7 +5029,7 @@ impl WorkbenchController {
 
     pub fn stop(&self, process_id: u32) -> Result<WorkbenchProcessResult, WorkbenchFailure> {
         let started = Instant::now();
-        let current = workbench_processes();
+        let current = process::workbench_processes();
         let observed = self.observed_processes.lock().ok().and_then(|processes| {
             processes
                 .iter()
@@ -4964,47 +5051,16 @@ impl WorkbenchController {
         let observed = observed.expect("checked observed process identity");
         let save_confirmed = self.save_before_process_control("stop", process_id);
         let close_mode = if save_confirmed { "graceful" } else { "force" };
-        let script = if save_confirmed {
-            format!(
-                "$p=Get-Process -Id {process_id} -ErrorAction Stop; \
-                 if ($p.ProcessName -ne 'ArmaReforgerWorkbenchSteamDiag' -or \
-                     [uint64]$p.StartTime.ToUniversalTime().Ticks -ne [uint64]{}) {{ exit 2 }}; \
-                 [void]$p.CloseMainWindow()",
-                observed.start_ticks
-            )
-        } else {
-            force_stop_workbench_script(observed)
-        };
-        let status = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &script,
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map_err(|error| {
-                self.correlate_failure_details(
-                    "stop",
-                    if save_confirmed {
-                        "graceful-close-request-failed"
-                    } else {
-                        "force-close-request-failed"
-                    },
-                    failure(WorkbenchFailureCode::Unavailable),
-                    json!({
-                        "processId": process_id,
-                        "errorKind": format!("{:?}", error.kind()),
-                        "closeMode": close_mode,
-                    }),
-                )
-            })?;
-        if !status.success() {
-            return Err(self.correlate_failure_details(
+        process::close(
+            observed,
+            if save_confirmed {
+                CloseMode::Graceful
+            } else {
+                CloseMode::Force
+            },
+        )
+        .map_err(|error| {
+            self.correlate_failure_details(
                 "stop",
                 if save_confirmed {
                     "graceful-close-failed"
@@ -5014,13 +5070,13 @@ impl WorkbenchController {
                 failure(WorkbenchFailureCode::Unavailable),
                 json!({
                     "processId": process_id,
-                    "exitCode": status.code(),
+                    "errorKind": format!("{:?}", error.kind()),
                     "closeMode": close_mode,
                 }),
-            ));
-        }
+            )
+        })?;
         for _ in 0..20 {
-            if !workbench_process_ids().contains(&process_id) {
+            if !process::workbench_process_ids().contains(&process_id) {
                 self.log_event_timed(
                     "stop",
                     "exited",
@@ -5051,21 +5107,9 @@ impl WorkbenchController {
                     "closeMode": close_mode,
                 }),
             );
-            let force_status = std::process::Command::new("powershell.exe")
-                .args([
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    &force_stop_workbench_script(observed),
-                ])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-            if force_status.is_ok_and(|status| status.success()) {
+            if process::close(observed, CloseMode::Force).is_ok() {
                 for _ in 0..20 {
-                    if !workbench_process_ids().contains(&process_id) {
+                    if !process::workbench_process_ids().contains(&process_id) {
                         self.log_event_timed(
                             "stop",
                             "exited-after-force-fallback",
@@ -5108,7 +5152,7 @@ impl WorkbenchController {
     }
 
     pub fn restart(&self, process_id: u32) -> Result<WorkbenchProcessResult, WorkbenchFailure> {
-        let current = workbench_processes();
+        let current = process::workbench_processes();
         let Some(process) = current
             .iter()
             .find(|process| process.id == process_id)
@@ -5122,7 +5166,15 @@ impl WorkbenchController {
             ));
         };
         let paths = self.paths();
-        let project = workbench_project_gproj(process)
+        // Workbench itself is the authority on the project it has open, and it
+        // answers on every host. The command line and the window title remain
+        // for a running Workbench whose bridge cannot answer.
+        let project = self
+            .loaded_addon_graph()
+            .ok()
+            .and_then(|graph| graph.current_project_file)
+            .filter(|project| project.is_file())
+            .or_else(|| workbench_project_gproj(&self.host, process))
             .or_else(|| {
                 workbench_project_title(process)
                     .and_then(|title| resolve_project_gproj(&paths.workbench_root, &title))
@@ -5147,45 +5199,20 @@ impl WorkbenchController {
             ));
         }
         let save_confirmed = self.save_before_process_control("restart", process_id);
-        let script = force_stop_workbench_script(process);
-        let status = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &script,
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map_err(|error| {
-                self.correlate_failure_details(
-                    "restart",
-                    "force-close-request-failed",
-                    failure(WorkbenchFailureCode::Unavailable),
-                    json!({
-                        "processId": process_id,
-                        "errorKind": format!("{:?}", error.kind()),
-                        "saveConfirmed": save_confirmed,
-                    }),
-                )
-            })?;
-        if !status.success() {
-            return Err(self.correlate_failure_details(
+        process::close(process, CloseMode::Force).map_err(|error| {
+            self.correlate_failure_details(
                 "restart",
                 "force-close-failed",
                 failure(WorkbenchFailureCode::Unavailable),
                 json!({
                     "processId": process_id,
-                    "exitCode": status.code(),
+                    "errorKind": format!("{:?}", error.kind()),
                     "saveConfirmed": save_confirmed,
                 }),
-            ));
-        }
+            )
+        })?;
         for _ in 0..20 {
-            if !workbench_processes().contains(&process) {
+            if !process::workbench_processes().contains(&process) {
                 return self.launch_project(Some(&project));
             }
             std::thread::sleep(Duration::from_millis(250));
@@ -5459,14 +5486,18 @@ impl WorkbenchController {
             .options
             .user_directory
             .clone()
-            .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+            .or_else(|| self.host.user_directory())
             .unwrap_or_default();
-        let profile = self.options.profile_directory.clone().unwrap_or_else(|| {
-            user.join("Documents")
-                .join("My Games")
-                .join("ArmaReforgerWorkbench")
-                .join("profile")
-        });
+        let profile_source = if self.options.profile_directory.is_some() {
+            "explicit"
+        } else {
+            self.host.source()
+        };
+        let profile = self
+            .options
+            .profile_directory
+            .clone()
+            .unwrap_or_else(|| profile_directory_in(&user));
         let workbench_root = profile
             .parent()
             .map(PathBuf::from)
@@ -5479,29 +5510,28 @@ impl WorkbenchController {
         let (game, game_source) = if let Some(game) = self.options.game_directory.clone() {
             (Some(game), "explicit".to_string())
         } else {
-            discover_steam_app("1874880").into_path_and_source()
+            discover_steam_app(REFORGER_GAME_APP_ID).into_path_and_source()
         };
         let (tools, tools_source) = if let Some(tools) = self.options.tools_directory.clone() {
             (Some(tools), "explicit".to_string())
         } else {
-            discover_steam_app("1874910").into_path_and_source()
+            discover_steam_app(REFORGER_TOOLS_APP_ID).into_path_and_source()
         };
         let (executable, executable_source) =
             if let Some(executable) = self.options.executable.clone() {
                 (Some(executable), "explicit".to_string())
             } else {
                 (
-                    tools.as_ref().map(|tools| {
-                        tools
-                            .join("Workbench")
-                            .join("ArmaReforgerWorkbenchSteamDiag.exe")
-                    }),
+                    tools
+                        .as_ref()
+                        .map(|tools| tools.join("Workbench").join(WORKBENCH_EXECUTABLE_NAME)),
                     "tools-installation".to_string(),
                 )
             };
         ResolvedWorkbenchPaths {
             workbench_root,
             profile,
+            profile_source,
             bridge_directory,
             legacy_bridge_directory,
             game,
@@ -5513,17 +5543,22 @@ impl WorkbenchController {
         }
     }
 
+    /// The support log this integration writes.
+    ///
+    /// It lives where the host keeps user state. An explicit user directory is
+    /// a test and development override and keeps the Windows layout beneath it.
     fn integration_log_path(&self) -> PathBuf {
-        let user = self
-            .options
+        self.options
             .user_directory
-            .clone()
-            .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
-            .unwrap_or_default();
-        user.join("AppData")
-            .join("Local")
-            .join("ReforgerScriptTools")
-            .join("logs")
+            .as_ref()
+            .map(|user| {
+                user.join("AppData")
+                    .join("Local")
+                    .join("ReforgerScriptTools")
+                    .join("logs")
+            })
+            .or_else(host_platform::support_log_directory)
+            .unwrap_or_default()
             .join("workbench.log")
     }
 
@@ -5578,6 +5613,27 @@ impl WorkbenchController {
                 Some(self.log_event_timed(operation, outcome, Instant::now(), details));
         }
         failure
+    }
+
+    /// Waits for a Workbench process that was not running before the launch.
+    fn wait_for_new_workbench_process(
+        &self,
+        before: &[ProcessIdentity],
+        deadline: Duration,
+    ) -> Option<ProcessIdentity> {
+        let started = Instant::now();
+        loop {
+            if let Some(process) = process::workbench_processes()
+                .into_iter()
+                .find(|process| !before.contains(process))
+            {
+                return Some(process);
+            }
+            if started.elapsed() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
     }
 
     fn wait_for_net_api(&self, deadline: Duration) -> bool {
@@ -5651,8 +5707,13 @@ fn component_mutation_audit_details(request: &Value, result: &WorkbenchComponent
 
 impl WorkbenchGateway {
     pub fn new(options: WorkbenchGatewayOptions) -> Self {
+        Self::with_host(options, workbench_host().clone())
+    }
+
+    fn with_host(options: WorkbenchGatewayOptions, host: WorkbenchHost) -> Self {
         Self {
             options,
+            host,
             request_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -5702,7 +5763,10 @@ impl WorkbenchGateway {
                 message: raw.error,
                 location: WorkbenchDiagnosticLocation {
                     file: raw.file,
-                    file_abs: raw.file_abs.map(PathBuf::from),
+                    file_abs: raw
+                        .file_abs
+                        .as_deref()
+                        .and_then(|value| self.host.to_host_path(value)),
                     addon: raw.addon,
                     line: raw.line,
                 },
@@ -7710,6 +7774,7 @@ fn shape_transform_operation_name(operation: WorkbenchShapeTransformOperation) -
 struct ResolvedWorkbenchPaths {
     workbench_root: PathBuf,
     profile: PathBuf,
+    profile_source: &'static str,
     bridge_directory: PathBuf,
     legacy_bridge_directory: PathBuf,
     game: Option<PathBuf>,
@@ -7718,6 +7783,22 @@ struct ResolvedWorkbenchPaths {
     tools_source: String,
     executable: Option<PathBuf>,
     executable_source: String,
+}
+
+/// The Workbench profile directory this host keeps, when the extension has not
+/// been pointed at a different one. Workbench owns this location; every reader
+/// of the profile resolves it here.
+pub fn default_profile_directory() -> Option<PathBuf> {
+    workbench_host()
+        .user_directory()
+        .map(|user| profile_directory_in(&user))
+}
+
+fn profile_directory_in(user: &Path) -> PathBuf {
+    user.join("Documents")
+        .join("My Games")
+        .join("ArmaReforgerWorkbench")
+        .join("profile")
 }
 
 fn path_status(path: Option<PathBuf>, source: &str) -> WorkbenchPathStatus {
@@ -7733,7 +7814,7 @@ fn is_workbench_executable(path: &std::path::Path) -> bool {
     path.is_file()
         && path.file_name().is_some_and(|name| {
             name.to_string_lossy()
-                .eq_ignore_ascii_case("ArmaReforgerWorkbenchSteamDiag.exe")
+                .eq_ignore_ascii_case(WORKBENCH_EXECUTABLE_NAME)
         })
 }
 
@@ -7860,12 +7941,13 @@ fn valid_loaded_addon(addon: &WorkbenchLoadedAddon) -> bool {
 /// add-ons are resolved only from the active Workbench Tools project registry;
 /// ambiguous or absent instances remain unavailable rather than guessed.
 fn resolve_loaded_addon_roots(
+    host: &WorkbenchHost,
     addons: &mut [WorkbenchLoadedAddon],
     current_project: Option<&Path>,
     profile: &Path,
 ) -> Result<(), ()> {
     let mut candidates = HashMap::<String, HashSet<PathBuf>>::new();
-    for project in registered_project_files(profile).map_err(|_| ())? {
+    for project in registered_project_files(host, profile).map_err(|_| ())? {
         register_project_candidate(&mut candidates, project)?;
     }
     if let Some(project) = current_project {
@@ -7900,7 +7982,10 @@ fn resolve_loaded_addon_roots(
     Ok(())
 }
 
-pub(crate) fn registered_project_files(profile: &Path) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn registered_project_files(
+    host: &WorkbenchHost,
+    profile: &Path,
+) -> Result<Vec<PathBuf>, String> {
     let mut projects = Vec::new();
     for entry in fs::read_dir(profile)
         .map_err(|error| error.to_string())?
@@ -7915,7 +8000,11 @@ pub(crate) fn registered_project_files(profile: &Path) -> Result<Vec<PathBuf>, S
             continue;
         }
         let source = fs::read_to_string(path).map_err(|error| error.to_string())?;
-        projects.extend(source.lines().filter_map(project_list_file_path));
+        projects.extend(
+            source
+                .lines()
+                .filter_map(|line| project_list_file_path(host, line)),
+        );
     }
     Ok(projects)
 }
@@ -7945,7 +8034,7 @@ pub(crate) fn installed_game_addon_project_files() -> Result<Vec<PathBuf>, Strin
     }
     #[cfg(not(test))]
     {
-        let Some(game) = (match discover_steam_app("1874880") {
+        let Some(game) = (match discover_steam_app(REFORGER_GAME_APP_ID) {
             SteamAppDiscovery::Found(path) => Some(path),
             SteamAppDiscovery::RegistrationUnavailable
             | SteamAppDiscovery::ManifestUnavailable
@@ -8037,15 +8126,15 @@ impl RawBridgeSpline {
     }
 }
 
-fn project_list_file_path(line: &str) -> Option<PathBuf> {
+/// Reads one project path from the Workbench project registry. Workbench
+/// records the path in its own space, so the host path is resolved here.
+fn project_list_file_path(host: &WorkbenchHost, line: &str) -> Option<PathBuf> {
     let value = line.trim().strip_prefix("FilePath ")?.trim();
     let value = value.strip_prefix('"')?.strip_suffix('"')?;
-    let path = PathBuf::from(value);
-    (path.is_absolute()
-        && path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("gproj")))
-    .then_some(path)
+    let path = host.to_host_path(value)?;
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("gproj"))
+        .then_some(path)
 }
 
 fn register_project_candidate(
@@ -8291,133 +8380,40 @@ fn bounded_log_window(path: &std::path::Path) -> std::io::Result<(Vec<String>, b
     Ok((all.map(str::to_string).collect(), offset > 0))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProcessIdentity {
-    id: u32,
-    start_ticks: u64,
-}
+/// The prefix Workbench puts before the open project in its window title.
+const WORKBENCH_WINDOW_TITLE_PREFIX: &str = "Enfusion Workbench - ";
 
-fn workbench_processes() -> Vec<ProcessIdentity> {
-    let script = "$items=@(Get-Process -Name ArmaReforgerWorkbenchSteamDiag -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ id=[uint32]$_.Id; startTicks=[uint64]$_.StartTime.ToUniversalTime().Ticks } }); ConvertTo-Json -Compress -InputObject $items";
-    let output = std::process::Command::new("powershell.exe")
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            script,
-        ])
-        .output();
-    let Ok(output) = output else {
-        return Vec::new();
-    };
-    parse_process_identities(&output.stdout)
-}
-
-fn force_stop_workbench_script(process: ProcessIdentity) -> String {
-    format!(
-        "$p=Get-Process -Id {} -ErrorAction Stop; \
-         if ($p.ProcessName -ne 'ArmaReforgerWorkbenchSteamDiag' -or \
-             [uint64]$p.StartTime.ToUniversalTime().Ticks -ne [uint64]{}) {{ exit 2 }}; \
-         Stop-Process -Id $p.Id -Force",
-        process.id, process.start_ticks
-    )
-}
-
-fn parse_process_identities(bytes: &[u8]) -> Vec<ProcessIdentity> {
-    serde_json::from_slice(bytes).unwrap_or_else(|_| {
-        serde_json::from_slice::<ProcessIdentity>(bytes)
-            .map(|process| vec![process])
-            .unwrap_or_default()
-    })
-}
-
-fn workbench_process_ids() -> Vec<u32> {
-    workbench_processes()
-        .into_iter()
-        .map(|process| process.id)
-        .collect()
-}
-
+/// The open project named by the one visible Workbench window title.
+///
+/// A host with no supported window route, or a process showing anything other
+/// than exactly one Workbench window, leaves the project unresolved here.
 fn workbench_project_title(process: ProcessIdentity) -> Option<String> {
-    let script = format!(
-        r#"
-Add-Type @'
-using System;
-using System.Text;
-using System.Runtime.InteropServices;
-public static class RSTRestartProject {{
- public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
- [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
- [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
- [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
- [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
-}}
-'@
-$p = Get-Process -Id {process_id} -ErrorAction Stop
-if ($p.ProcessName -ne 'ArmaReforgerWorkbenchSteamDiag' -or [uint64]$p.StartTime.ToUniversalTime().Ticks -ne [uint64]{start_ticks}) {{ exit 2 }}
-$titles = [System.Collections.Generic.List[string]]::new()
-$callback = [RSTRestartProject+EnumWindowsProc] {{ param([IntPtr]$hWnd, [IntPtr]$unused)
- [uint32]$owner = 0; [void][RSTRestartProject]::GetWindowThreadProcessId($hWnd, [ref]$owner)
- if ($owner -eq $p.Id -and [RSTRestartProject]::IsWindowVisible($hWnd)) {{
-  $title = [System.Text.StringBuilder]::new(512); [void][RSTRestartProject]::GetWindowText($hWnd, $title, $title.Capacity)
-  $value = $title.ToString(); if ($value.StartsWith('Enfusion Workbench - ', [System.StringComparison]::Ordinal)) {{ $titles.Add($value.Substring('Enfusion Workbench - '.Length)) }}
- }}
- return $true
-}}
-[void][RSTRestartProject]::EnumWindows($callback, [IntPtr]::Zero)
-if ($titles.Count -ne 1) {{ exit 3 }}
-$titles[0]
-"#,
-        process_id = process.id,
-        start_ticks = process.start_ticks,
-    );
-    let output = std::process::Command::new("powershell.exe")
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            &script,
-        ])
-        .output()
-        .ok()?;
-    output.status.success().then_some(())?;
-    let title = String::from_utf8(output.stdout).ok()?.trim().to_string();
-    (!title.is_empty()).then_some(title)
+    let mut titles = process::window_titles(process)?
+        .into_iter()
+        .filter_map(|title| {
+            title
+                .strip_prefix(WORKBENCH_WINDOW_TITLE_PREFIX)
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    (titles.len() == 1).then(|| titles.remove(0))
 }
 
 /// Returns the exact `.gproj` passed to the already-running Workbench process.
 ///
-/// The command line is more authoritative than the window title: user addons commonly live
-/// outside the Tools installation's `addons` directory and therefore cannot be rediscovered by
-/// title alone.
-fn workbench_project_gproj(process: ProcessIdentity) -> Option<PathBuf> {
-    let script = format!(
-        r#"$commandLine = (Get-CimInstance Win32_Process -Filter 'ProcessId = {}' -ErrorAction Stop).CommandLine;
-if ($commandLine -match '(?i)(?:^|\s)-gproj\s+(?:"([^"]+)"|(\S+))') {{
-    if ($Matches[1]) {{ $Matches[1] }} else {{ $Matches[2] }}
-}}"#,
-        process.id
-    );
-    let output = std::process::Command::new("powershell.exe")
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            &script,
-        ])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    output.status.success().then_some(())?;
-    let path = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
-    (path.is_absolute()
-        && path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("gproj"))
+/// The command line is more authoritative than the window title: user addons
+/// commonly live outside the Tools installation's `addons` directory and
+/// therefore cannot be rediscovered by title alone.
+fn workbench_project_gproj(host: &WorkbenchHost, process: ProcessIdentity) -> Option<PathBuf> {
+    let arguments = process::command_line(process)?;
+    let value = arguments
+        .iter()
+        .position(|argument| argument.eq_ignore_ascii_case("-gproj"))
+        .and_then(|index| arguments.get(index + 1))?;
+    let path = host.to_host_path(value)?;
+    (path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("gproj"))
         && path.is_file())
     .then_some(path)
 }
@@ -8469,7 +8465,11 @@ fn base_game_addons_directory(game_directory: Option<&std::path::Path>) -> Optio
         .then_some(addons)
 }
 
+/// Builds the arguments Workbench is started with, addressed in Workbench's
+/// own path space. A host path that Workbench cannot address leaves the launch
+/// unavailable rather than passing a path Workbench would reject.
 fn workbench_launch_arguments(
+    host: &WorkbenchHost,
     project: Option<&std::path::Path>,
     game_directory: Option<&std::path::Path>,
     profile_root: Option<&std::path::Path>,
@@ -8481,21 +8481,21 @@ fn workbench_launch_arguments(
     if let Some(profile_root) = profile_root {
         arguments.extend([
             std::ffi::OsString::from("-profile"),
-            profile_root.as_os_str().to_os_string(),
+            host.to_workbench_path(profile_root)?,
         ]);
     }
     let game_addons = base_game_addons_directory(game_directory)?;
     if let Some(project) = project {
         arguments.extend([
             std::ffi::OsString::from("-gproj"),
-            project.as_os_str().to_os_string(),
+            host.to_workbench_path(project)?,
         ]);
     }
     arguments.extend([
         std::ffi::OsString::from("-addons"),
         std::ffi::OsString::from(WORKBENCH_REQUIRED_ADDONS),
         std::ffi::OsString::from("-addonsDir"),
-        game_addons.into_os_string(),
+        host.to_workbench_path(&game_addons)?,
     ]);
     Some(arguments)
 }
@@ -8522,7 +8522,7 @@ impl SteamAppDiscovery {
 }
 
 fn discover_steam_app(app_id: &str) -> SteamAppDiscovery {
-    discover_steam_app_from_roots(&registered_steam_roots(), app_id)
+    discover_steam_app_from_roots(&host_platform::steam_roots(), app_id)
 }
 
 #[cfg(test)]
@@ -8536,7 +8536,7 @@ fn discover_steam_app_from_roots(steam_roots: &[PathBuf], app_id: &str) -> Steam
     }
     let mut libraries = steam_roots
         .iter()
-        .flat_map(|steam_root| steam_libraries(steam_root))
+        .flat_map(|steam_root| host_platform::steam_libraries(steam_root))
         .collect::<Vec<_>>();
     libraries.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
     libraries.dedup_by(|left, right| paths_equal(left, right));
@@ -8551,7 +8551,7 @@ fn discover_steam_app_from_roots(steam_roots: &[PathBuf], app_id: &str) -> Steam
             continue;
         };
         manifest_found = true;
-        let Some(install_dir) = acf_string(&content, "installdir") else {
+        let Some(install_dir) = host_platform::acf_string(&content, "installdir") else {
             invalid_installation = true;
             continue;
         };
@@ -8575,110 +8575,106 @@ fn discover_steam_app_from_roots(steam_roots: &[PathBuf], app_id: &str) -> Steam
 
 fn valid_steam_app_install(app_id: &str, candidate: &std::path::Path) -> bool {
     match app_id {
-        "1874880" => candidate
+        REFORGER_GAME_APP_ID => candidate
             .join("addons")
             .join("data")
             .join("ArmaReforger.gproj")
             .is_file(),
-        "1874910" => is_workbench_executable(
-            &candidate
-                .join("Workbench")
-                .join("ArmaReforgerWorkbenchSteamDiag.exe"),
-        ),
+        REFORGER_TOOLS_APP_ID => {
+            is_workbench_executable(&candidate.join("Workbench").join(WORKBENCH_EXECUTABLE_NAME))
+        }
         _ => false,
     }
 }
 
-fn steam_libraries(steam_root: &std::path::Path) -> Vec<PathBuf> {
-    let mut libraries = vec![steam_root.to_path_buf()];
-    if let Ok(vdf) = fs::read_to_string(steam_root.join("steamapps").join("libraryfolders.vdf")) {
-        for line in vdf.lines() {
-            let values = line
-                .split('"')
-                .enumerate()
-                .filter_map(|(index, value)| (index % 2 == 1).then_some(value))
-                .collect::<Vec<_>>();
-            if values.first().is_some_and(|value| *value == "path") {
-                if let Some(value) = values.get(1) {
-                    libraries.push(PathBuf::from(value.replace("\\\\", "\\")));
-                }
-            }
-        }
-    }
-    libraries
-}
+/// The `HKEY_CURRENT_USER` keys the `enfusion` URL protocol is registered under.
+const ENFUSION_PROTOCOL_KEY: &str = r"Software\Classes\enfusion";
+const ENFUSION_PROTOCOL_COMMAND_KEY: &str = r"Software\Classes\enfusion\shell\open\command";
+const ENFUSION_PROTOCOL_DESCRIPTION: &str = "URL:enfusion Protocol";
+/// The `HKEY_CURRENT_USER` value Workbench reads its NET API switch from.
+const WORKBENCH_OPTIONS_KEY: &str =
+    r"Software\Bohemia Interactive\Arma Reforger Workbench\Workbench";
 
-#[cfg(windows)]
-fn registered_steam_roots() -> Vec<PathBuf> {
-    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
-
-    let registrations = [
-        (HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
-        (
-            HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\WOW6432Node\Valve\Steam",
-            "InstallPath",
-        ),
-        (HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath"),
-    ];
-    let mut roots = registrations
-        .iter()
-        .filter_map(|(hive, key, value)| windows_registry_string(*hive, key, value))
-        .map(PathBuf::from)
-        .filter_map(|path| fs::canonicalize(path).ok())
-        .collect::<Vec<_>>();
-    roots.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
-    roots.dedup_by(|left, right| paths_equal(left, right));
-    roots
-}
-
-#[cfg(not(windows))]
-fn registered_steam_roots() -> Vec<PathBuf> {
-    Vec::new()
-}
-
-fn enfusion_protocol_command(executable: &Path, addons: &Path, project: &Path) -> String {
-    format!(
+fn enfusion_protocol_command(
+    host: &WorkbenchHost,
+    executable: &Path,
+    addons: &Path,
+    project: &Path,
+) -> Option<String> {
+    Some(format!(
         "\"{}\" -addonsDir \"{}\" -gproj \"{}\" -uri=\"%1\"",
-        windows_command_path(executable),
-        windows_command_argument_path(addons),
-        windows_command_argument_path(project),
-    )
+        workbench_command_path(host, executable)?,
+        workbench_command_argument_path(host, addons)?,
+        workbench_command_argument_path(host, project)?,
+    ))
 }
 
-fn windows_command_argument_path(path: &Path) -> String {
-    windows_command_path(path).replace('\\', "/")
+fn workbench_command_argument_path(host: &WorkbenchHost, path: &Path) -> Option<String> {
+    Some(workbench_command_path(host, path)?.replace('\\', "/"))
 }
 
-fn windows_command_path(path: &Path) -> String {
-    let value = path.to_string_lossy();
-    if let Some(path) = value.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{path}")
-    } else {
-        value.strip_prefix(r"\\?\").unwrap_or(&value).to_string()
-    }
+/// The path Workbench addresses a host path by, in the plain form a command
+/// line carries rather than the extended form canonicalization produces.
+fn workbench_command_path(host: &WorkbenchHost, path: &Path) -> Option<String> {
+    let value = host.to_workbench_path(path)?;
+    let value = value.to_string_lossy();
+    Some(match value.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => value.strip_prefix(r"\\?\").unwrap_or(&value).to_string(),
+    })
 }
 
-#[cfg(windows)]
-fn register_enfusion_protocol(paths: &ResolvedWorkbenchPaths) -> std::io::Result<bool> {
-    let command = resolved_enfusion_protocol_command(paths)?;
+/// Registers the `enfusion` URL protocol wherever this host resolves it: in
+/// Workbench's own registry, and — where Workbench runs inside a prefix — with
+/// the host desktop that opens links from outside it.
+fn register_enfusion_protocol(
+    host: &WorkbenchHost,
+    paths: &ResolvedWorkbenchPaths,
+) -> std::io::Result<bool> {
+    let command = resolved_enfusion_protocol_command(host, paths)?;
     let mut changed = false;
-    changed |= set_current_user_registry_string(
-        r"Software\Classes\enfusion",
+    changed |= set_workbench_registry_string(
+        host,
+        ENFUSION_PROTOCOL_KEY,
         None,
-        "URL:enfusion Protocol",
+        ENFUSION_PROTOCOL_DESCRIPTION,
     )?;
     changed |=
-        set_current_user_registry_string(r"Software\Classes\enfusion", Some("URL Protocol"), "")?;
-    changed |= set_current_user_registry_string(
-        r"Software\Classes\enfusion\shell\open\command",
-        None,
-        &command,
-    )?;
+        set_workbench_registry_string(host, ENFUSION_PROTOCOL_KEY, Some("URL Protocol"), "")?;
+    changed |= set_workbench_registry_string(host, ENFUSION_PROTOCOL_COMMAND_KEY, None, &command)?;
+    changed |= register_host_enfusion_handler(host, paths)?;
     Ok(changed)
 }
 
-fn resolved_enfusion_protocol_command(paths: &ResolvedWorkbenchPaths) -> std::io::Result<String> {
+fn enfusion_protocol_registered(host: &WorkbenchHost, paths: &ResolvedWorkbenchPaths) -> bool {
+    let Ok(expected_command) = resolved_enfusion_protocol_command(host, paths) else {
+        return false;
+    };
+    workbench_registry_nonblank_string(host, ENFUSION_PROTOCOL_KEY, None).as_deref()
+        == Some(ENFUSION_PROTOCOL_DESCRIPTION)
+        && workbench_registry_string(host, ENFUSION_PROTOCOL_KEY, Some("URL Protocol")).as_deref()
+            == Some("")
+        && workbench_registry_nonblank_string(host, ENFUSION_PROTOCOL_COMMAND_KEY, None).as_deref()
+            == Some(expected_command.as_str())
+        && host_enfusion_handler_registered(host, paths)
+}
+
+fn resolved_enfusion_protocol_command(
+    host: &WorkbenchHost,
+    paths: &ResolvedWorkbenchPaths,
+) -> std::io::Result<String> {
+    let (executable, addons, project) = resolved_enfusion_protocol_targets(paths)?;
+    enfusion_protocol_command(host, executable, &addons, &project).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "the resolved Workbench paths have no address in Workbench's path space",
+        )
+    })
+}
+
+fn resolved_enfusion_protocol_targets(
+    paths: &ResolvedWorkbenchPaths,
+) -> std::io::Result<(&Path, PathBuf, PathBuf)> {
     let executable = paths
         .executable
         .as_deref()
@@ -8707,245 +8703,141 @@ fn resolved_enfusion_protocol_command(paths: &ResolvedWorkbenchPaths) -> std::io
             "the resolved base-game Workbench project is unavailable",
         ));
     }
-    Ok(enfusion_protocol_command(executable, &addons, &project))
+    Ok((executable, addons, project))
 }
 
-#[cfg(not(windows))]
-fn register_enfusion_protocol(_paths: &ResolvedWorkbenchPaths) -> std::io::Result<bool> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "enfusion protocol registration is only supported on Windows",
-    ))
-}
-
-#[cfg(windows)]
-fn enfusion_protocol_registered(paths: &ResolvedWorkbenchPaths) -> bool {
-    use windows_sys::Win32::System::Registry::HKEY_CURRENT_USER;
-
-    let Ok(expected_command) = resolved_enfusion_protocol_command(paths) else {
-        return false;
+/// Registers the host desktop handler that opens an `enfusion` link which was
+/// followed outside the prefix. A native host already resolves the scheme
+/// through the registry written above.
+fn register_host_enfusion_handler(
+    host: &WorkbenchHost,
+    paths: &ResolvedWorkbenchPaths,
+) -> std::io::Result<bool> {
+    let Some(handler) = host_enfusion_handler(host, paths) else {
+        return Ok(false);
     };
-    windows_registry_string(HKEY_CURRENT_USER, r"Software\Classes\enfusion", "").as_deref()
-        == Some("URL:enfusion Protocol")
-        && windows_registry_string_including_empty(
-            HKEY_CURRENT_USER,
-            r"Software\Classes\enfusion",
-            "URL Protocol",
-        )
-        .as_deref()
-            == Some("")
-        && windows_registry_string(
-            HKEY_CURRENT_USER,
-            r"Software\Classes\enfusion\shell\open\command",
-            "",
-        )
-        .as_deref()
-            == Some(expected_command.as_str())
+    host_platform::url_scheme::register(&handler)
 }
 
-#[cfg(not(windows))]
-fn enfusion_protocol_registered(_paths: &ResolvedWorkbenchPaths) -> bool {
-    false
+/// Whether the host desktop resolves the scheme. A host with no handler to
+/// register — a native host, or one with no route to start Workbench — has
+/// nothing outstanding and is reported as satisfied rather than as stale work
+/// that bootstrap would repeat without effect.
+fn host_enfusion_handler_registered(host: &WorkbenchHost, paths: &ResolvedWorkbenchPaths) -> bool {
+    host_enfusion_handler(host, paths)
+        .is_none_or(|handler| host_platform::url_scheme::registered(&handler))
 }
 
-#[cfg(windows)]
-fn set_current_user_registry_string(
-    key_path: &str,
+/// The desktop handler this host needs, if any.
+fn host_enfusion_handler(
+    host: &WorkbenchHost,
+    paths: &ResolvedWorkbenchPaths,
+) -> Option<host_platform::url_scheme::SchemeHandler> {
+    host.wine_prefix()?;
+    let (executable, addons, project) = resolved_enfusion_protocol_targets(paths).ok()?;
+    let arguments = [
+        "-addonsDir".to_string(),
+        workbench_command_argument_path(host, &addons)?,
+        "-gproj".to_string(),
+        workbench_command_argument_path(host, &project)?,
+        "-uri=%u".to_string(),
+    ];
+    host.url_scheme_handler(
+        "enfusion",
+        "Arma Reforger Workbench",
+        executable,
+        &arguments,
+    )
+}
+
+/// Reads one string value from the registry Workbench reads its options from.
+fn workbench_registry_string(
+    host: &WorkbenchHost,
+    key: &str,
+    value_name: Option<&str>,
+) -> Option<String> {
+    match host {
+        WorkbenchHost::Native => native_registry_string(key, value_name),
+        WorkbenchHost::Wine(prefix) => {
+            host_platform::wine_registry::read_string(&prefix.user_registry_path(), key, value_name)
+        }
+        WorkbenchHost::Unavailable => None,
+    }
+}
+
+/// The same value, with a blank string treated as absent.
+fn workbench_registry_nonblank_string(
+    host: &WorkbenchHost,
+    key: &str,
+    value_name: Option<&str>,
+) -> Option<String> {
+    workbench_registry_string(host, key, value_name).filter(|value| !value.trim().is_empty())
+}
+
+/// Writes one string value into the registry Workbench reads its options from,
+/// reporting whether the registry changed.
+fn set_workbench_registry_string(
+    host: &WorkbenchHost,
+    key: &str,
     value_name: Option<&str>,
     value: &str,
 ) -> std::io::Result<bool> {
-    use std::ptr::null_mut;
-    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
-    use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegCreateKeyW, RegQueryValueExW, RegSetValueExW, HKEY_CURRENT_USER, REG_SZ,
-    };
-
-    let key_path = key_path
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let value_name = value_name.map(|name| {
-        name.encode_utf16()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>()
-    });
-    let value_name_ptr = value_name
-        .as_ref()
-        .map_or(std::ptr::null(), |name| name.as_ptr());
-    let mut key = null_mut();
-    let status = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, key_path.as_ptr(), &mut key) };
-    if status != ERROR_SUCCESS {
-        return Err(std::io::Error::from_raw_os_error(status as i32));
-    }
-
-    let result = (|| {
-        let mut data_type = 0_u32;
-        let mut byte_count = 0_u32;
-        let read_status = unsafe {
-            RegQueryValueExW(
-                key,
-                value_name_ptr,
-                null_mut(),
-                &mut data_type,
-                null_mut(),
-                &mut byte_count,
-            )
-        };
-        let current = if read_status == ERROR_SUCCESS
-            && data_type == REG_SZ
-            && byte_count >= 2
-            && byte_count % 2 == 0
-        {
-            let mut buffer = vec![0_u16; byte_count as usize / 2];
-            let read_status = unsafe {
-                RegQueryValueExW(
-                    key,
-                    value_name_ptr,
-                    null_mut(),
-                    &mut data_type,
-                    buffer.as_mut_ptr().cast(),
-                    &mut byte_count,
-                )
-            };
-            if read_status != ERROR_SUCCESS {
-                return Err(std::io::Error::from_raw_os_error(read_status as i32));
+    match host {
+        WorkbenchHost::Native => native_registry_write(key, value_name, value),
+        WorkbenchHost::Wine(prefix) => {
+            // Wine loads the hive when its server starts and rewrites it from
+            // memory on shutdown, so an edit made now would be discarded while
+            // the prefix is running.
+            if host_platform::wine_registry::prefix_in_use(prefix.root()) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::ResourceBusy,
+                    "close Workbench so the Wine prefix registry can be written",
+                ));
             }
-            Some(
-                String::from_utf16_lossy(&buffer)
-                    .trim_end_matches('\0')
-                    .to_string(),
-            )
-        } else if read_status == ERROR_FILE_NOT_FOUND {
-            None
-        } else if read_status == ERROR_SUCCESS && data_type == REG_SZ && byte_count % 2 != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Windows registry string has an odd byte length",
-            ));
-        } else if read_status == ERROR_SUCCESS {
-            None
-        } else {
-            return Err(std::io::Error::from_raw_os_error(read_status as i32));
-        };
-        if current.as_deref() == Some(value) {
-            return Ok(false);
-        }
-
-        let encoded = value
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>();
-        let status = unsafe {
-            RegSetValueExW(
+            host_platform::wine_registry::write_string(
+                &prefix.user_registry_path(),
                 key,
-                value_name_ptr,
-                0,
-                REG_SZ,
-                encoded.as_ptr().cast(),
-                (encoded.len() * std::mem::size_of::<u16>()) as u32,
+                value_name,
+                value,
             )
-        };
-        if status != ERROR_SUCCESS {
-            return Err(std::io::Error::from_raw_os_error(status as i32));
         }
-        Ok(true)
-    })();
-    unsafe { RegCloseKey(key) };
-    result
-}
-
-#[cfg(windows)]
-fn windows_registry_string(
-    hive: windows_sys::Win32::System::Registry::HKEY,
-    key: &str,
-    value: &str,
-) -> Option<String> {
-    windows_registry_string_including_empty(hive, key, value).filter(|text| !text.trim().is_empty())
-}
-
-#[cfg(windows)]
-fn windows_registry_string_including_empty(
-    hive: windows_sys::Win32::System::Registry::HKEY,
-    key: &str,
-    value: &str,
-) -> Option<String> {
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-    use windows_sys::Win32::System::Registry::{RegGetValueW, RRF_RT_REG_SZ};
-
-    let key = key
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let value = value
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let mut byte_count = 0u32;
-    let status = unsafe {
-        RegGetValueW(
-            hive,
-            key.as_ptr(),
-            value.as_ptr(),
-            RRF_RT_REG_SZ,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &mut byte_count,
-        )
-    };
-    if status != ERROR_SUCCESS || byte_count < 2 || byte_count % 2 != 0 {
-        return None;
+        WorkbenchHost::Unavailable => Err(host_platform::unsupported("the Workbench registry")),
     }
-
-    let mut buffer = vec![0u16; byte_count as usize / 2];
-    let status = unsafe {
-        RegGetValueW(
-            hive,
-            key.as_ptr(),
-            value.as_ptr(),
-            RRF_RT_REG_SZ,
-            std::ptr::null_mut(),
-            buffer.as_mut_ptr().cast(),
-            &mut byte_count,
-        )
-    };
-    if status != ERROR_SUCCESS {
-        return None;
-    }
-    let length = buffer
-        .iter()
-        .position(|unit| *unit == 0)
-        .unwrap_or(buffer.len());
-    String::from_utf16(&buffer[..length]).ok()
 }
 
 #[cfg(windows)]
-fn enable_workbench_net_api() -> std::io::Result<bool> {
-    set_current_user_registry_string(
-        r"Software\Bohemia Interactive\Arma Reforger Workbench\Workbench",
-        Some("NetAPI_Enabled"),
-        "1",
+fn native_registry_string(key: &str, value_name: Option<&str>) -> Option<String> {
+    host_platform::windows_registry::current_user_string_including_empty(
+        key,
+        value_name.unwrap_or_default(),
     )
 }
 
 #[cfg(not(windows))]
-fn enable_workbench_net_api() -> std::io::Result<bool> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "Workbench NET API enablement is only supported on Windows",
-    ))
+fn native_registry_string(_key: &str, _value_name: Option<&str>) -> Option<String> {
+    None
 }
 
-fn acf_string(content: &str, key: &str) -> Option<String> {
-    content.lines().find_map(|line| {
-        let values = line
-            .split('"')
-            .enumerate()
-            .filter_map(|(index, value)| (index % 2 == 1).then_some(value))
-            .collect::<Vec<_>>();
-        (values.first().is_some_and(|value| *value == key))
-            .then(|| values.get(1).map(|value| (*value).to_string()))
-            .flatten()
-    })
+#[cfg(windows)]
+fn native_registry_write(
+    key: &str,
+    value_name: Option<&str>,
+    value: &str,
+) -> std::io::Result<bool> {
+    host_platform::windows_registry::set_current_user_string(key, value_name, value)
+}
+
+#[cfg(not(windows))]
+fn native_registry_write(
+    _key: &str,
+    _value_name: Option<&str>,
+    _value: &str,
+) -> std::io::Result<bool> {
+    Err(host_platform::unsupported("the Windows registry"))
+}
+
+fn enable_workbench_net_api(host: &WorkbenchHost) -> std::io::Result<bool> {
+    set_workbench_registry_string(host, WORKBENCH_OPTIONS_KEY, Some("NetAPI_Enabled"), "1")
 }
 
 fn bridge_payload() -> &'static [(&'static str, &'static str)] {
@@ -9023,6 +8915,8 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    /// The extended-length form only exists in the native Windows path space.
+    #[cfg(windows)]
     #[test]
     fn enfusion_protocol_command_quotes_every_path_and_the_uri_argument() {
         let executable = std::path::Path::new(
@@ -9034,8 +8928,29 @@ mod tests {
         let project = addons.join("data").join("ArmaReforger.gproj");
 
         assert_eq!(
-            enfusion_protocol_command(executable, addons, &project),
+            enfusion_protocol_command(&super::WorkbenchHost::Native, executable, addons, &project),
             r#""C:\Program Files (x86)\Steam\steamapps\common\Arma Reforger Tools\Workbench\ArmaReforgerWorkbenchSteamDiag.exe" -addonsDir "C:/Program Files (x86)/Steam/steamapps/common/Arma Reforger/addons" -gproj "C:/Program Files (x86)/Steam/steamapps/common/Arma Reforger/addons/data/ArmaReforger.gproj" -uri="%1""#,
+        );
+    }
+
+    #[test]
+    fn enfusion_protocol_command_addresses_a_wine_prefix_in_workbench_paths() {
+        let host = wine_test_host();
+        let tools = std::path::Path::new("/library/steamapps/common/Arma Reforger Tools");
+        let executable = tools
+            .join("Workbench")
+            .join("ArmaReforgerWorkbenchSteamDiag.exe");
+        let addons = std::path::Path::new("/library/steamapps/common/Arma Reforger/addons");
+        let project = addons.join("data").join("ArmaReforger.gproj");
+
+        assert_eq!(
+            enfusion_protocol_command(&host, &executable, addons, &project).as_deref(),
+            Some(concat!(
+                r#""Z:\library\steamapps\common\Arma Reforger Tools\Workbench\ArmaReforgerWorkbenchSteamDiag.exe""#,
+                r#" -addonsDir "Z:/library/steamapps/common/Arma Reforger/addons""#,
+                r#" -gproj "Z:/library/steamapps/common/Arma Reforger/addons/data/ArmaReforger.gproj""#,
+                r#" -uri="%1""#,
+            )),
         );
     }
 
@@ -9053,30 +8968,42 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request, json!({"APIFunc": "RST_WorkbenchLoadedAddonGraph"}));
             json!({
-                "bridgeVersion": "1.52.12",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion": 1,
                 "graphJson": "[{\"guid\":\"58D0FB3206B6F859\",\"id\":\"ArmaReforger\",\"title\":\"Arma Reforger\",\"sourceRoot\":\"C:/Game/addons/data\"},{\"guid\":\"684CE8AA3B1D6573\",\"id\":\"GCSuppression\",\"title\":\"GC Suppression\",\"sourceRoot\":\"C:/Workbench/addons/GC-Suppression\"}]"
             })
         });
-        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
-            gateway: super::WorkbenchGatewayOptions {
-                port,
-                status_deadline: Duration::from_secs(1),
-                ..super::WorkbenchGatewayOptions::default()
+        let profile = test_root("loaded-addon-graph");
+        fs::create_dir_all(&profile).unwrap();
+        let controller = super::WorkbenchController::with_host(
+            super::WorkbenchControllerOptions {
+                gateway: super::WorkbenchGatewayOptions {
+                    port,
+                    status_deadline: Duration::from_secs(1),
+                    ..super::WorkbenchGatewayOptions::default()
+                },
+                profile_directory: Some(profile.clone()),
+                ..super::WorkbenchControllerOptions::default()
             },
-            ..super::WorkbenchControllerOptions::default()
-        });
+            wine_test_host(),
+        );
 
         let graph = controller.loaded_addon_graph().unwrap();
 
         assert_eq!(graph.addons.len(), 2);
         assert_eq!(graph.addons[0].guid, "58D0FB3206B6F859");
+        assert_eq!(
+            graph.addons[0].source_root,
+            std::path::PathBuf::from("/prefix/drive_c/Game/addons/data"),
+            "Workbench reports its own path space and the host reads the mapped path",
+        );
         assert_eq!(graph.addons[1].id, "GCSuppression");
         assert_eq!(
             graph.addons[1].source_root,
-            std::path::PathBuf::from("C:/Workbench/addons/GC-Suppression")
+            std::path::PathBuf::from("/prefix/drive_c/Workbench/addons/GC-Suppression")
         );
         peer.join().unwrap();
+        fs::remove_dir_all(profile).unwrap();
     }
 
     #[test]
@@ -9146,6 +9073,7 @@ mod tests {
         ];
 
         super::resolve_loaded_addon_roots(
+            &super::WorkbenchHost::Native,
             &mut addons,
             Some(&data.join("ArmaReforger.gproj")),
             &profile,
@@ -9369,7 +9297,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchCapabilities"}),
                 json!({
-                    "bridgeVersion": "1.52.12",
+                    "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                     "protocolVersion": 1,
                     "runtimeGeneration": 8,
                     "capabilities": "state"
@@ -9437,7 +9365,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchCapabilities"}),
                 json!({
-                    "bridgeVersion": "1.52.12",
+                    "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                     "protocolVersion": 1,
                     "runtimeGeneration": 7,
                     "capabilities": "state"
@@ -9446,7 +9374,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchState", "executeSaveAllAction": true}),
                 json!({
-                    "bridgeVersion": "1.52.12",
+                    "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                     "protocolVersion": 1,
                     "saveAllActionAccepted": true,
                     "saveAllActionPath": "File/Save All",
@@ -9457,7 +9385,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchState", "executeReloadAction": true}),
                 json!({
-                    "bridgeVersion": "1.52.12",
+                    "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                     "protocolVersion": 1,
                     "reloadActionAccepted": true,
                     "reloadActionPath": "Plugins/Settings/Reload WB Scripts"
@@ -9475,7 +9403,7 @@ mod tests {
             (
                 json!({"APIFunc": "RST_WorkbenchCapabilities"}),
                 json!({
-                    "bridgeVersion": "1.52.12",
+                    "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                     "protocolVersion": 1,
                     "runtimeGeneration": 9,
                     "capabilities": "state"
@@ -9655,7 +9583,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion": "1.52.12",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion": 1,
                 "found": 1,
                 "status": "found",
@@ -11469,7 +11397,7 @@ mod tests {
         let (port, peer) = start_peer(|request| {
             assert_eq!(request, json!({"APIFunc": "RST_WorkbenchState"}));
             json!({
-                "bridgeVersion": "1.52.12",
+                "bridgeVersion": super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion": 1,
                 "mode": "world-editor",
                 "worldEditorActive": true,
@@ -11584,7 +11512,15 @@ mod tests {
                 ]
             })
         });
-        let gateway = test_gateway(port);
+        let gateway = super::WorkbenchGateway::with_host(
+            super::WorkbenchGatewayOptions {
+                port,
+                status_deadline: Duration::from_secs(1),
+                validation_deadline: Duration::from_secs(1),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            wine_test_host(),
+        );
 
         let result = gateway.validate_scripts().unwrap();
 
@@ -11599,7 +11535,7 @@ mod tests {
             result.diagnostics[0].location,
             WorkbenchDiagnosticLocation {
                 file: "scripts/A.c".to_string(),
-                file_abs: Some("C:\\Addon\\scripts\\A.c".into()),
+                file_abs: Some("/prefix/drive_c/Addon/scripts/A.c".into()),
                 addon: Some("Addon".to_string()),
                 line: 7,
             }
@@ -12292,7 +12228,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            super::workbench_launch_arguments(None, Some(&game), None),
+            super::workbench_launch_arguments(
+                &super::WorkbenchHost::Native,
+                None,
+                Some(&game),
+                None,
+            ),
             Some(vec![
                 std::ffi::OsString::from("-noThrow"),
                 std::ffi::OsString::from("-forceUpdate"),
@@ -12302,9 +12243,17 @@ mod tests {
                 game.join("addons").into_os_string(),
             ]),
         );
-        assert_eq!(super::workbench_launch_arguments(None, None, None), None);
         assert_eq!(
-            super::workbench_launch_arguments(Some(&project), Some(&game), None),
+            super::workbench_launch_arguments(&super::WorkbenchHost::Native, None, None, None),
+            None,
+        );
+        assert_eq!(
+            super::workbench_launch_arguments(
+                &super::WorkbenchHost::Native,
+                Some(&project),
+                Some(&game),
+                None,
+            ),
             Some(vec![
                 std::ffi::OsString::from("-noThrow"),
                 std::ffi::OsString::from("-forceUpdate"),
@@ -12318,7 +12267,12 @@ mod tests {
         );
         let profile_root = root.join("isolated-workbench");
         assert_eq!(
-            super::workbench_launch_arguments(Some(&project), Some(&game), Some(&profile_root)),
+            super::workbench_launch_arguments(
+                &super::WorkbenchHost::Native,
+                Some(&project),
+                Some(&game),
+                Some(&profile_root),
+            ),
             Some(vec![
                 std::ffi::OsString::from("-noThrow"),
                 std::ffi::OsString::from("-forceUpdate"),
@@ -12693,46 +12647,6 @@ mod tests {
     }
 
     #[test]
-    fn process_identity_decoder_preserves_single_and_multiple_exact_identities() {
-        assert_eq!(
-            super::parse_process_identities(br#"{"id":7,"startTicks":11}"#),
-            vec![super::ProcessIdentity {
-                id: 7,
-                start_ticks: 11,
-            }]
-        );
-        assert_eq!(
-            super::parse_process_identities(
-                br#"[{"id":7,"startTicks":11},{"id":8,"startTicks":12}]"#
-            ),
-            vec![
-                super::ProcessIdentity {
-                    id: 7,
-                    start_ticks: 11,
-                },
-                super::ProcessIdentity {
-                    id: 8,
-                    start_ticks: 12,
-                },
-            ]
-        );
-        assert!(super::parse_process_identities(b"not-json").is_empty());
-    }
-
-    #[test]
-    fn force_close_script_requires_the_exact_running_workbench_identity() {
-        let script = super::force_stop_workbench_script(super::ProcessIdentity {
-            id: 7,
-            start_ticks: 11,
-        });
-
-        assert!(script.contains("Get-Process -Id 7"));
-        assert!(script.contains("ArmaReforgerWorkbenchSteamDiag"));
-        assert!(script.contains("Ticks -ne [uint64]11"));
-        assert!(script.contains("Stop-Process -Id $p.Id -Force"));
-    }
-
-    #[test]
     fn validation_cursor_pages_one_immutable_compiler_snapshot() {
         let controller =
             super::WorkbenchController::new(super::WorkbenchControllerOptions::default());
@@ -13085,7 +12999,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.52.12",
+                "bridgeVersion":super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion":1,
                 "status":"available",
                 "entity":"0x01 {}|SplineShapeEntity|0|1|10|20|30||||",
@@ -13135,7 +13049,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.52.12",
+                "bridgeVersion":super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion":1,
                 "status":"spline-updated",
                 "entity":"0x01 {}|SplineShapeEntity|0|1|10|20|30||||",
@@ -13220,7 +13134,7 @@ mod tests {
                 })
             );
             json!({
-                "bridgeVersion":"1.52.12",
+                "bridgeVersion":super::WORKBENCH_BRIDGE_VERSION,
                 "protocolVersion":1,
                 "status":"sampled",
                 "entity":"0x01 {}|SplineShapeEntity|0|1|10|20|30||||",
@@ -13370,6 +13284,19 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.status, "invalid-component-descriptor");
+    }
+
+    /// A Wine host with the drive mapping every prefix has: the prefix's own
+    /// `C:` and the host root as `Z:`.
+    fn wine_test_host() -> super::WorkbenchHost {
+        super::WorkbenchHost::Wine(crate::host_platform::WinePrefix::from_drives(
+            std::path::PathBuf::from("/prefix"),
+            crate::host_platform::WinePrefixSource::SteamCompatibilityData,
+            vec![
+                ('c', std::path::PathBuf::from("/prefix/drive_c")),
+                ('z', std::path::PathBuf::from("/")),
+            ],
+        ))
     }
 
     fn test_gateway(port: u16) -> WorkbenchGateway {

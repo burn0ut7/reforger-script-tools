@@ -6,6 +6,7 @@ import { languageClientIndexCache } from '../extensionConfig/languageClient';
 import {
 	externalIndexModes,
 	type ExternalIndexMode,
+	readWorkbenchWinePrefix,
 	workbenchConfig,
 	workbenchDefaults,
 } from '../extensionConfig/workbench';
@@ -25,6 +26,7 @@ export interface McpLaunchInputs {
 	officialWikiRoot?: string;
 	workspaceScripts?: string[];
 	dependencyProjectFiles?: string[];
+	workbenchWinePrefix?: string;
 }
 
 type ConfigurationFormat = 'generic' | 'codex';
@@ -44,6 +46,7 @@ export function buildMcpLaunchConfiguration(inputs: McpLaunchInputs): McpLaunch 
 		...(inputs.officialWikiRoot ? ['--official-wiki-root', inputs.officialWikiRoot] : []),
 		...(inputs.workspaceScripts ?? []).flatMap(root => ['--workspace-scripts', root]),
 		...(inputs.dependencyProjectFiles ?? []).flatMap(projectFile => ['--dependency-project', projectFile]),
+		...(inputs.workbenchWinePrefix ? ['--workbench-wine-prefix', inputs.workbenchWinePrefix] : []),
 	];
 	return {
 		command: inputs.serverPath,
@@ -103,6 +106,7 @@ export function registerMcpConfigurationCommand(
 				officialWikiRoot: path.join(context.extensionPath, 'data', 'official-wiki'),
 				workspaceScripts: await discoverWorkspaceScriptRoots(),
 				dependencyProjectFiles: await discoverWorkspaceProjectFiles(),
+				workbenchWinePrefix: readWorkbenchWinePrefix(),
 			});
 			const configuration = format === 'codex'
 				? renderCodexMcpConfiguration(launch)

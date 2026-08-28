@@ -12,6 +12,7 @@ pub mod game_data_catalogue;
 pub mod game_data_inspection;
 pub mod game_data_research;
 pub mod game_data_search;
+pub mod host_platform;
 pub mod index;
 pub mod index_build;
 pub mod index_cache;

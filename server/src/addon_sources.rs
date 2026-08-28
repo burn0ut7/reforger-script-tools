@@ -3393,7 +3393,9 @@ fn read_project_dependency_graph(
         })?);
     }
     if let Some(profile) = workbench_profile {
-        for project_file in registered_project_files(profile)? {
+        for project_file in
+            registered_project_files(crate::host_platform::workbench_host(), profile)?
+        {
             if project_file.is_file() {
                 discovered.insert(fs::canonicalize(&project_file).map_err(|error| {
                     format!(
@@ -3637,13 +3639,10 @@ fn discover_dependency_project_files(project_files: &[PathBuf]) -> Result<Vec<Pa
             }
         }
     }
-    if let Some(user_profile) = std::env::var_os("USERPROFILE") {
-        let profile = PathBuf::from(user_profile)
-            .join("Documents")
-            .join("My Games")
-            .join("ArmaReforgerWorkbench")
-            .join("profile");
-        if let Ok(projects) = registered_project_files(&profile) {
+    if let Some(profile) = crate::workbench::default_profile_directory() {
+        if let Ok(projects) =
+            registered_project_files(crate::host_platform::workbench_host(), &profile)
+        {
             for project in projects {
                 if project.is_file() {
                     discovered.insert(project);
@@ -4420,13 +4419,7 @@ mod tests {
         let storage = root.join("indexes");
         load_or_build_loaded_addon_indexes(&graph, &storage, &[], &IndexBuildControl::default())
             .unwrap();
-        let corrupt_cache = fs::read_dir(&storage)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path()
-            .join("symbols.bin");
+        let corrupt_cache = cache_directory_for(&storage, "1111111111111111").join("symbols.bin");
         fs::write(corrupt_cache, b"corrupt").unwrap();
 
         let result =
@@ -4604,12 +4597,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rebuilt.rebuilt_instances, 1);
-        let packed_cache = fs::read_dir(&storage)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
+        let packed_cache = only_cache_directory(&storage);
         assert!(packed_cache.join("symbols.bin").is_file());
         assert!(packed_cache.join("manifest.json").is_file());
         assert!(!packed_cache.join("revisions").exists());
@@ -4676,12 +4664,7 @@ mod tests {
         write_workbench_graph_fixture(&inventory, &data);
         let storage = root.join("indexes");
         load_or_build_base_game_index(&inventory, &storage, &IndexBuildControl::default()).unwrap();
-        let addon_cache = fs::read_dir(&storage)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
+        let addon_cache = only_cache_directory(&storage);
         let manifest: AddonIndexManifest =
             serde_json::from_slice(&fs::read(addon_cache.join("manifest.json")).unwrap()).unwrap();
         let uris = manifest
@@ -4759,12 +4742,7 @@ mod tests {
             IndexCacheStatus::Rebuilt { .. }
         ));
         assert_eq!(rebuilt.summary.files, 2);
-        let addon_cache = fs::read_dir(&storage)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
+        let addon_cache = only_cache_directory(&storage);
         let manifest_header_path = addon_cache.join(ADDON_MANIFEST_HEADER_FILE);
         assert!(manifest_header_path.is_file());
         let manifest: AddonIndexManifest =
@@ -4885,12 +4863,7 @@ mod tests {
         write_workbench_graph_fixture(&inventory, &addons.join("data"));
         let storage = root.join("indexes");
         load_or_build_base_game_index(&inventory, &storage, &IndexBuildControl::default()).unwrap();
-        let addon_cache = fs::read_dir(&storage)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
+        let addon_cache = only_cache_directory(&storage);
         let first_manifest: AddonIndexManifest =
             serde_json::from_slice(&fs::read(addon_cache.join("manifest.json")).unwrap()).unwrap();
 
@@ -5066,6 +5039,42 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    /// The cache directory holding one add-on's index, named by its GUID.
+    fn cache_directory_for(storage: &Path, guid: &str) -> PathBuf {
+        let prefix = format!("{guid}-");
+        fs::read_dir(storage)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.is_dir()
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with(&prefix))
+            })
+            .unwrap_or_else(|| panic!("a cached index is expected for {guid}"))
+    }
+
+    /// The one add-on cache directory in an index storage root. Directory order
+    /// is filesystem-defined and the catalogue file shares the root, so the
+    /// cache is selected rather than taken from the first entry.
+    fn only_cache_directory(storage: &Path) -> PathBuf {
+        let mut directories = fs::read_dir(storage)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            directories.len(),
+            1,
+            "one cached add-on is expected in {}",
+            storage.display(),
+        );
+        directories.remove(0)
     }
 
     fn write_fixture_pak(path: &Path, entries: &[(&str, &[u8])]) {

@@ -62,7 +62,7 @@ class RST_WorkbenchTrace : NetApiHandler
 	{
 		RST_WorkbenchTraceRequest q = RST_WorkbenchTraceRequest.Cast(request);
 		RST_WorkbenchTraceResponse response = new RST_WorkbenchTraceResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		WorldEditor e = Workbench.GetModule(WorldEditor);
 		if (!e || !e.GetApi() || !e.GetApi().GetWorld())

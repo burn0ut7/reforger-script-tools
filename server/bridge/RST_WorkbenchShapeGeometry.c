@@ -66,7 +66,7 @@ class RST_WorkbenchShapeGeometry : NetApiHandler
 	RST_WorkbenchShapeGeometryResponse Response()
 	{
 		RST_WorkbenchShapeGeometryResponse response = new RST_WorkbenchShapeGeometryResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		return response;
 	}

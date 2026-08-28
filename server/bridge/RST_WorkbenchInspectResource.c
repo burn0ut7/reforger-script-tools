@@ -37,7 +37,7 @@ class RST_WorkbenchInspectResource : NetApiHandler
 	{
 		RST_WorkbenchInspectResourceRequest typedRequest = RST_WorkbenchInspectResourceRequest.Cast(request);
 		RST_WorkbenchInspectResourceResponse response = new RST_WorkbenchInspectResourceResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		ResourceManager resourceManager = Workbench.GetModule(ResourceManager);
 		if (!resourceManager)

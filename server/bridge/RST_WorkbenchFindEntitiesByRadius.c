@@ -98,7 +98,7 @@ class RST_WorkbenchFindEntitiesByRadius : NetApiHandler
 	{
 		RST_WorkbenchFindEntitiesByRadiusRequest typedRequest = RST_WorkbenchFindEntitiesByRadiusRequest.Cast(request);
 		RST_WorkbenchFindEntitiesByRadiusResponse response = new RST_WorkbenchFindEntitiesByRadiusResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		response.centerX = typedRequest.centerX;
 		response.centerY = typedRequest.centerY;
@@ -135,8 +135,6 @@ class RST_WorkbenchFindEntitiesByRadius : NetApiHandler
 			flags = EQueryEntitiesFlags.STATIC;
 		else if (typedRequest.queryScope == "dynamic")
 			flags = EQueryEntitiesFlags.DYNAMIC;
-		else if (typedRequest.queryScope == "features")
-			flags = EQueryEntitiesFlags.FEATURES;
 		else if (typedRequest.queryScope != "all")
 		{
 			response.status = "invalid-query-scope";

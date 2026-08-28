@@ -36,13 +36,7 @@ fn index_phase(scope_authority: AddonScopeAuthority) -> &'static str {
 }
 
 fn default_workbench_profile_directory() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE").map(|user_profile| {
-        PathBuf::from(user_profile)
-            .join("Documents")
-            .join("My Games")
-            .join("ArmaReforgerWorkbench")
-            .join("profile")
-    })
+    crate::workbench::default_profile_directory()
 }
 
 #[derive(Clone)]

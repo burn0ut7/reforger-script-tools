@@ -45,7 +45,7 @@ class RST_WorkbenchShapePointsBase : NetApiHandler
 	RST_WorkbenchShapePointsResponse Response()
 	{
 		RST_WorkbenchShapePointsResponse response = new RST_WorkbenchShapePointsResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		return response;
 	}

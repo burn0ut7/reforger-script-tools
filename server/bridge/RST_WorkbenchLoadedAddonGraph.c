@@ -30,7 +30,7 @@ class RST_WorkbenchLoadedAddonGraph : NetApiHandler
 	override JsonApiStruct GetResponse(JsonApiStruct request)
 	{
 		RST_WorkbenchLoadedAddonGraphResponse response = new RST_WorkbenchLoadedAddonGraphResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		response.currentProjectFile = Workbench.GetCurrentGameProjectFile();
 		array<string> addonGuids = new array<string>();

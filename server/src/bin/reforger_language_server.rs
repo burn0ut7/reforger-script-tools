@@ -8,8 +8,7 @@ use reforger_language_server::mcp::{
     render_api_reference, render_api_reference_bundle, run_stdio as run_mcp_stdio, McpServerOptions,
 };
 use reforger_language_server::workbench::{
-    WorkbenchControllerOptions, WorkbenchFailureCode, WorkbenchGatewayOptions,
-    WorkbenchInstallAuthorization,
+    WorkbenchControllerOptions, WorkbenchFailureCode, WorkbenchInstallAuthorization,
 };
 use std::env;
 use std::path::PathBuf;
@@ -20,7 +19,7 @@ enum ServerMode {
     Mcp(McpServerOptions),
     McpApi,
     McpApiBundle,
-    WorkbenchApi(WorkbenchApiCommand, WorkbenchGatewayOptions),
+    WorkbenchApi(WorkbenchApiCommand, WorkbenchControllerOptions),
     Help,
 }
 
@@ -48,6 +47,10 @@ fn main() {
         }
     };
 
+    // Every host-dependent operation resolves through the one host this
+    // process was started for, so it is settled before any mode runs.
+    reforger_language_server::host_platform::configure_workbench_host(workbench_wine_prefix(&mode));
+
     let result = match mode {
         ServerMode::Lsp(options) => run_lsp_stdio(options),
         ServerMode::Mcp(options) => run_mcp_stdio(options),
@@ -68,6 +71,17 @@ fn main() {
     if let Err(error) = result {
         eprintln!("{error}");
         std::process::exit(1);
+    }
+}
+
+/// The Wine prefix the caller pointed this process at, in whichever mode it
+/// was started.
+fn workbench_wine_prefix(mode: &ServerMode) -> Option<&std::path::Path> {
+    match mode {
+        ServerMode::Lsp(options) => options.workbench_wine_prefix.as_deref(),
+        ServerMode::Mcp(options) => options.workbench.wine_prefix.as_deref(),
+        ServerMode::WorkbenchApi(_, options) => options.wine_prefix.as_deref(),
+        ServerMode::McpApi | ServerMode::McpApiBundle | ServerMode::Help => None,
     }
 }
 
@@ -133,13 +147,13 @@ fn parse_workbench_api_args(mut args: impl Iterator<Item = String>) -> Result<Se
         Some(value) => return Err(format!("unknown workbench-api command '{value}'")),
         None => return Err("missing workbench-api command".to_string()),
     };
-    let mut options = WorkbenchGatewayOptions::default();
+    let mut options = WorkbenchControllerOptions::default();
     while let Some(argument) = args.next() {
         match argument.as_str() {
-            "--host" => options.host = string_value(&mut args, "--host")?,
+            "--host" => options.gateway.host = string_value(&mut args, "--host")?,
             "--port" => {
                 let value = string_value(&mut args, "--port")?;
-                options.port = value
+                options.gateway.port = value
                     .parse::<u16>()
                     .map_err(|_| format!("invalid value for --port: {value}"))?;
             }
@@ -150,8 +164,11 @@ fn parse_workbench_api_args(mut args: impl Iterator<Item = String>) -> Result<Se
                         .parse::<u64>()
                         .map_err(|_| format!("invalid value for --deadline-ms: {value}"))?,
                 );
-                options.status_deadline = deadline;
-                options.validation_deadline = deadline;
+                options.gateway.status_deadline = deadline;
+                options.gateway.validation_deadline = deadline;
+            }
+            "--workbench-wine-prefix" => {
+                options.wine_prefix = Some(path_value(&mut args, "--workbench-wine-prefix")?)
             }
             _ => return Err(format!("unknown workbench-api argument '{argument}'")),
         }
@@ -161,14 +178,10 @@ fn parse_workbench_api_args(mut args: impl Iterator<Item = String>) -> Result<Se
 
 fn run_workbench_api(
     command: WorkbenchApiCommand,
-    options: WorkbenchGatewayOptions,
+    options: WorkbenchControllerOptions,
 ) -> Result<(), String> {
     let started = Instant::now();
-    let controller =
-        reforger_language_server::workbench::WorkbenchController::new(WorkbenchControllerOptions {
-            gateway: options,
-            ..WorkbenchControllerOptions::default()
-        });
+    let controller = reforger_language_server::workbench::WorkbenchController::new(options);
     let controller_setup_ms = started.elapsed().as_millis();
     let result = match command {
         WorkbenchApiCommand::Status => {
@@ -314,6 +327,10 @@ fn parse_lsp_args(mut args: impl Iterator<Item = String>) -> Result<LspServerOpt
                     .dependency_project_files
                     .push(path_value(&mut args, "--dependency-project")?);
             }
+            "--workbench-wine-prefix" => {
+                options.workbench_wine_prefix =
+                    Some(path_value(&mut args, "--workbench-wine-prefix")?)
+            }
             "--bracket-coloring" => {
                 let value = string_value(&mut args, "--bracket-coloring")?;
                 options.bracket_coloring = match value.as_str() {
@@ -395,6 +412,9 @@ fn parse_mcp_args(mut args: impl Iterator<Item = String>) -> Result<McpServerOpt
                 workbench.profile_directory =
                     Some(path_value(&mut args, "--workbench-profile-directory")?)
             }
+            "--workbench-wine-prefix" => {
+                workbench.wine_prefix = Some(path_value(&mut args, "--workbench-wine-prefix")?)
+            }
             _ => return Err(format!("unknown MCP argument '{argument}'")),
         }
     }
@@ -424,7 +444,7 @@ fn string_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn print_help() {
     println!(
-        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server mcp-api-bundle\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|read-logs|integration-status|bootstrap-integration|maintain-integration|process-status|launch-default|install-bridge|reload-bridge> [--host <loopback>] [--port <port>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --dependency-project <path> (repeatable)\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --external-index-mode <all|loaded|none>\n  --workspace-scripts <path> (repeatable)\n  --dependency-project <path> (repeatable)\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>"
+        "Usage:\n  reforger_language_server [LSP options]\n  reforger_language_server mcp [MCP options]\n  reforger_language_server mcp-api\n  reforger_language_server mcp-api-bundle\n  reforger_language_server workbench-api <status|validate|loaded-addon-graph|read-logs|integration-status|bootstrap-integration|maintain-integration|process-status|launch-default|install-bridge|reload-bridge> [--host <loopback>] [--port <port>] [--workbench-wine-prefix <path>]\n\nLSP options:\n  --log <path>\n  --diagnostic-log <path>\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --workspace-scripts <path> (repeatable)\n  --dependency-project <path> (repeatable)\n  --workbench-wine-prefix <path>\n  --bracket-coloring <semantic|punctuation|vscode>\n\nMCP options:\n  --addon-source-inventory <path>\n  --addon-index-storage <path>\n  --external-index-mode <all|loaded|none>\n  --workspace-scripts <path> (repeatable)\n  --dependency-project <path> (repeatable)\n  --official-wiki-root <development/test path>\n  --workbench-host <loopback host>\n  --workbench-port <port>\n  --workbench-executable <path>\n  --reforger-game-directory <path>\n  --reforger-tools-directory <path>\n  --workbench-user-directory <test/development override>\n  --workbench-profile-directory <test/development override>\n  --workbench-wine-prefix <path>"
     );
 }
 

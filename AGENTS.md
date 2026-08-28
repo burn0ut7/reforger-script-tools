@@ -18,6 +18,9 @@ Route work to the owner instead of growing a second implementation path.
   bridges.
 - `server/`: lexing, parsing, syntax, semantics, indexing, diagnostics,
   formatting, and LSP behavior.
+- `server/src/host_platform.rs`: every fact about the host that runs Workbench —
+  Steam layout, Wine prefix, path-space translation, Workbench's registry,
+  process identity, launch route, and desktop URL schemes.
 - `tools/`: developer tooling only; never a runtime dependency.
 
 Keep TypeScript as the editor shell and Rust as the language engine. Workbench
@@ -34,6 +37,8 @@ that owns the question before changing a non-trivial area:
 - `docs/architecture.md`: cross-layer flow and ownership boundaries.
 - `docs/language-engine.md`: Rust analysis, snapshot, and LSP contract.
 - `docs/development.md`: local build, test, and development workflow.
+- `docs/host-platform.md`: Windows and Wine hosts, path-space translation, and
+  host-owned process, registry, and launch routes.
 
 Documentation records durable context; code and tests remain the implementation
 source of truth. Extend an existing document when it owns the subject. Create a

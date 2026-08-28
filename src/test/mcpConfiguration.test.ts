@@ -95,6 +95,32 @@ suite('MCP configuration', () => {
 		]);
 	});
 
+	test('points the MCP runtime at the Wine prefix that hosts Workbench', () => {
+		const launch = buildMcpLaunchConfiguration({
+			serverPath: '/extension/reforger_language_server',
+			addonSourceInventory: '/storage/graph.json',
+			addonIndexStorage: '/storage/addon-indexes',
+			externalIndexMode: 'loaded',
+			workbenchWinePrefix: '/home/dev/.steam/steam/steamapps/compatdata/1874910/pfx',
+		});
+
+		assert.deepStrictEqual(launch.args.slice(-2), [
+			'--workbench-wine-prefix',
+			'/home/dev/.steam/steam/steamapps/compatdata/1874910/pfx',
+		]);
+	});
+
+	test('omits the Wine prefix argument when the host resolves it', () => {
+		const launch = buildMcpLaunchConfiguration({
+			serverPath: '/extension/reforger_language_server',
+			addonSourceInventory: '/storage/graph.json',
+			addonIndexStorage: '/storage/addon-indexes',
+			externalIndexMode: 'loaded',
+		});
+
+		assert.ok(!launch.args.includes('--workbench-wine-prefix'));
+	});
+
 	test('passes opened workspace projects to loaded dependency scope discovery', () => {
 		const launch = buildMcpLaunchConfiguration({
 			serverPath: '/extension/reforger_language_server',

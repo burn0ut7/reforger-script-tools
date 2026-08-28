@@ -187,6 +187,9 @@ const MAX_BACKGROUND_RUNTIME_WORKERS: usize = 1;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LspServerOptions {
     pub log_path: Option<PathBuf>,
+    /// The Wine prefix hosting Workbench, when the host does not run it
+    /// natively and the extension has been pointed at a specific prefix.
+    pub workbench_wine_prefix: Option<PathBuf>,
     pub diagnostic_log_path: Option<PathBuf>,
     pub addon_source_inventory: Option<PathBuf>,
     pub addon_index_storage: Option<PathBuf>,

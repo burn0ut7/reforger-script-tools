@@ -181,7 +181,7 @@ class RST_WorkbenchSearchEntities : NetApiHandler
 	{
 		RST_WorkbenchSearchEntitiesRequest req = RST_WorkbenchSearchEntitiesRequest.Cast(request);
 		RST_WorkbenchSearchEntitiesResponse response = new RST_WorkbenchSearchEntitiesResponse();
-		response.bridgeVersion = "1.52.12";
+		response.bridgeVersion = "1.52.13";
 		response.protocolVersion = 1;
 		WorldEditor editor = Workbench.GetModule(WorldEditor);
 		if (!editor || !editor.GetApi())
