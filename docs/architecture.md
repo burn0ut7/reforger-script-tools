@@ -208,6 +208,13 @@ names but adapt into the same source-selected dispatch as the generic tools.
 Retire those public aliases only after supported callers migrate; paginated
 specialists are not part of that retirement.
 
+The Search UI keeps bounded query/page results for back-navigation and cursor
+traversal, with one query-cache allocation/eviction policy shared by its search
+modes. These presentation pages are distinct from Rust's source/query caches.
+Closing or losing the private MCP process clears pending timers, partial input,
+pages, and scope revisions together. Only that session's process can deliver
+events or initialization failures; a replaced process cannot clear its successor.
+
 The extension contributes the MCP Runtime and packaged Official Wiki Corpus.
 It does not contribute or package Agent Skills. Client-managed skills are
 outside the extension's runtime and release inputs.

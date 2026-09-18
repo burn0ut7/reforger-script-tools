@@ -316,11 +316,13 @@
     "test:workbench-mcp:runner": "node --test tools/workbench-mcp-conformance.test.mjs",
     "test:workbench-mcp:contract": "node tools/workbench-mcp-conformance.mjs",
     "test:mcp-runtime-report": "node --test tools/mcp-runtime-performance-report.test.mjs",
+    "test:search-client": "node --test tools/search-client.test.mjs",
+    "report:search-client-cache": "node --expose-gc tools/search-client-cache-profile.mjs",
     "report:mcp-runtime": "node tools/mcp-runtime-performance-report.mjs",
     "report:text-search": "node tools/text-search-performance.mjs",
     "test:packaged-official-wiki": "npm run package && node tools/test-packaged-official-wiki.mjs",
     "lint": "eslint src",
-    "test": "vscode-test && vscode-test --config .vscode-test-mcp.mjs && npm run test:packaged-official-wiki"
+    "test": "npm run test:search-client && vscode-test && vscode-test --config .vscode-test-mcp.mjs && npm run test:packaged-official-wiki"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

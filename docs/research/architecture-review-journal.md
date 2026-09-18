@@ -32,7 +32,8 @@ an implementation priority. Commit and push coherent verified slices on `MCP`.
 | 4. Shared foreground syntax | Completed: shared immutable syntax; profile improves allocations/retention, build and 1,058 Rust tests pass. |
 | 5. Cache metadata | Verified: retained compact/repair formats, removed unreachable decode, corrected cache-only provenance. Build and 1,058 Rust tests pass; first-navigation measurement follows the priority 6 report repair. |
 | 6. Compatibility tools | Completed: shared dispatch, unchanged contracts, current report coverage; build, 1,059 Rust tests, API check, and five report tests pass. Real-cache navigation correctly rejects a changed pack. |
-| 7–9. Remaining architecture priorities | Queued in the order below. |
+| 7. Search UI caching/lifecycle | Completed: shared cache setup/session cleanup; build, four direct client tests, and 209 editor tests pass; measured page reuse retained. |
+| 8–9. Remaining architecture priorities | Workbench acceptance awaits a live endpoint; preview ownership review follows. |
 | Clean-window MCP activation | Reproduce and diagnose the failed acceptance gate. |
 | Final acceptance | Full Rust/extension/package checks and feasible live Workbench acceptance. |
 
@@ -407,6 +408,32 @@ Replacing paginated search with `search_reforger`'s one hit per authority would
 remove features and is not an acceptable cleanup.
 
 ## 7. Reduce Search UI caching and lifecycle complexity
+
+**Completed:** Three copies of query-cache creation/eviction now share one
+private operation. Dispose and process exit share session cleanup. Cleanup now
+clears pending timers and partial protocol input; old process events and an old
+initialization rejection cannot clear or dispose a replacement session. The new
+behavioral tests reproduced the timer/buffer failures before the fix and cover
+restart ownership, scope changes, cached navigation, and stale-cursor recovery.
+
+**Retention decision:** Keep the bounded page caches and independent MCP
+process. In a synthetic client-only workload (40 queries, 40 pages, 100 hits per
+page, one fresh process per mode), retained heap was approximately 25.9 / 31.8 /
+53.9 / 66.0 MB for semantic/text/resource/relationship modes. Revisited pages
+required 0 / 0 / 0 / 1 remote requests; the relationship call refreshes revision
+evidence on page one. Before/after profiles retain the same page counts and
+request counts, with effectively unchanged retained memory. Removing these
+caches would replace useful navigation reuse with remote requests. This is not
+a claim about full editor memory, real-server latency, or a memory reduction.
+Resource/relationship chains retain up to the existing 100-page UI limit;
+semantic/text caches retain 32 pages per query. The outer bound remains 32
+query keys. Logs: `.cache/reports/review-search-cache-{before,after}.json`.
+
+The production build, four direct client tests, and 209 editor tests pass.
+Preview cancellation and mode/scope changes retain their existing editor checks.
+Logs: `.cache/reports/review-search-{compile,tests,editor}.log`.
+
+The original investigation below records the problem and acceptance rationale.
 
 **Files:** `src/searchPrototype/mcpSearchClient.ts::{search,sourceRange,
 searchPage,searchRelationships,searchResources,startProcess}`;

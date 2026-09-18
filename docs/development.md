@@ -134,6 +134,15 @@ evidence rather than portable CI gates; pass `--enforce-budgets` only for a
 controlled machine/profile where those thresholds are intentional. Use
 `npm run test:mcp-runtime-report` as the deterministic report contract gate.
 
+`npm run test:search-client` exercises the actual TypeScript Search client with
+a controlled transport, covering disposal/restart races, partial protocol input,
+scope invalidation, cache eviction/navigation, and stale text cursors. It runs
+in the standard test workflow. `npm run report:search-client-cache` runs each
+search mode in a fresh Node process and measures retained heap after garbage
+collection for 40 synthetic queries with 40 pages of 100 results, plus revisited
+page latency and remote request count. It preserves the production cache limits;
+its client-only timings are not real-server or editor latency measurements.
+
 To reproduce full-text search performance through the real MCP stdio path, run
 one of:
 

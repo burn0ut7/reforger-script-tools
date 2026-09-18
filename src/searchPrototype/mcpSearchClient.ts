@@ -712,17 +712,7 @@ export class McpSearchClient {
 			addonGuids.join(','), [...request.relationshipKinds].sort().join(','), request.depth,
 			request.symbolKinds?.join(',') ?? '', pageSize,
 		].join('\u0000');
-		let pages = this.searchPageCaches.get(cacheKey);
-		if (!pages) {
-			if (this.searchPageCaches.size >= maxSearchPageCaches) {
-				const oldest = this.searchPageCaches.keys().next().value;
-				if (oldest !== undefined) {
-					this.searchPageCaches.delete(oldest);
-				}
-			}
-			pages = new Map<number, CachedSearchPage>();
-			this.searchPageCaches.set(cacheKey, pages);
-		}
+		const pages = this.pagesForQuery(cacheKey);
 		const sourceTrace = sourcePerformanceFor(trace, request.anchor.source);
 		const initialStartedAt = performance.now();
 		try {
@@ -891,31 +881,35 @@ export class McpSearchClient {
 		if (this.initialized) {
 			return this.initialized;
 		}
-		this.initialized = this.startProcess();
+		const initialization = this.startProcess();
+		this.initialized = initialization;
 		try {
-			await this.initialized;
+			await initialization;
 		} catch (error) {
-			this.dispose();
+			if (this.initialized === initialization) {
+				this.dispose();
+			}
 			throw error;
 		}
 	}
 
 	public dispose(): void {
 		const activeProcess = this.process;
-		this.process = undefined;
-		this.initialized = undefined;
-		this.searchPageCaches.clear();
-		this.lastScopeRevision = undefined;
-		this.lastCatalogueRevision = undefined;
-		const error = new Error('The Reforger search session was closed.');
-		for (const request of this.pending.values()) {
-			request.reject(error);
-		}
-		this.pending.clear();
+		this.clearSession(new Error('The Reforger search session was closed.'));
 		if (activeProcess && !activeProcess.killed) {
 			activeProcess.stdin.end();
 			activeProcess.kill();
 		}
+	}
+
+	private clearSession(error: Error): void {
+		this.process = undefined;
+		this.initialized = undefined;
+		this.receiveBuffer = Buffer.alloc(0);
+		this.searchPageCaches.clear();
+		this.lastScopeRevision = undefined;
+		this.lastCatalogueRevision = undefined;
+		this.failPending(error);
 	}
 
 	private async searchResources(
@@ -936,17 +930,7 @@ export class McpSearchClient {
 		const requestedPage = Math.min(maxSearchPages, Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1));
 		const source: SearchSource = 'gameData';
 		const cacheKey = `resource\u0000${normalizedPageSize}\u0000${query}\u0000${kinds.join(',')}\u0000${addonGuids.join(',')}`;
-		let pages = this.searchPageCaches.get(cacheKey);
-		if (!pages) {
-			if (this.searchPageCaches.size >= maxSearchPageCaches) {
-				const oldest = this.searchPageCaches.keys().next().value;
-				if (oldest !== undefined) {
-					this.searchPageCaches.delete(oldest);
-				}
-			}
-			pages = new Map<number, CachedSearchPage>();
-			this.searchPageCaches.set(cacheKey, pages);
-		}
+		const pages = this.pagesForQuery(cacheKey);
 		for (let current = 1; current <= requestedPage; current += 1) {
 			if (pages.has(current)) {
 				continue;
@@ -1011,17 +995,23 @@ export class McpSearchClient {
 			windowsHide: true,
 		});
 		this.process = child;
-		child.stdout.on('data', chunk => this.consumeOutput(Buffer.from(chunk)));
-		child.on('error', error => this.failPending(error));
-		child.on('exit', () => {
-			this.process = undefined;
-			this.initialized = undefined;
-			this.searchPageCaches.clear();
-			this.lastScopeRevision = undefined;
-			this.lastCatalogueRevision = undefined;
-			this.failPending(new Error('The Reforger search server stopped.'));
+		child.stdout.on('data', chunk => {
+			if (this.process === child) {
+				this.consumeOutput(Buffer.from(chunk));
+			}
 		});
-		child.stdin.on('error', error => this.failPending(error));
+		const failCurrent = (error: Error) => {
+			if (this.process === child) {
+				this.failPending(error);
+			}
+		};
+		child.on('error', failCurrent);
+		child.on('exit', () => {
+			if (this.process === child) {
+				this.clearSession(new Error('The Reforger search server stopped.'));
+			}
+		});
+		child.stdin.on('error', failCurrent);
 		child.stderr.on('data', () => undefined);
 
 		await this.request('initialize', {
@@ -1081,6 +1071,21 @@ export class McpSearchClient {
 		return results;
 	}
 
+	private pagesForQuery(cacheKey: string): Map<number, CachedSearchPage> {
+		let pages = this.searchPageCaches.get(cacheKey);
+		if (!pages) {
+			if (this.searchPageCaches.size >= maxSearchPageCaches) {
+				const oldest = this.searchPageCaches.keys().next().value;
+				if (oldest !== undefined) {
+					this.searchPageCaches.delete(oldest);
+				}
+			}
+			pages = new Map<number, CachedSearchPage>();
+			this.searchPageCaches.set(cacheKey, pages);
+		}
+		return pages;
+	}
+
 	private async searchPage(
 		query: string,
 		source: SearchSource,
@@ -1095,17 +1100,7 @@ export class McpSearchClient {
 	): Promise<CachedSearchPage> {
 		const sourceTrace = trace ? sourcePerformanceFor(trace, source) : undefined;
 		const cacheKey = `${mode}\u0000${source}\u0000${pageSize}\u0000${query}\u0000${addonGuids.join(',')}\u0000${symbolKinds?.join(',') ?? ''}\u0000${textOptions.matchCase}\u0000${textOptions.matchWholeWord}\u0000${textOptions.useRegex}`;
-		let pages = this.searchPageCaches.get(cacheKey);
-		if (!pages) {
-			if (this.searchPageCaches.size >= maxSearchPageCaches) {
-				const oldest = this.searchPageCaches.keys().next().value;
-				if (oldest !== undefined) {
-					this.searchPageCaches.delete(oldest);
-				}
-			}
-			pages = new Map<number, CachedSearchPage>();
-			this.searchPageCaches.set(cacheKey, pages);
-		}
+		const pages = this.pagesForQuery(cacheKey);
 
 		const cached = pages.get(page);
 		if (cached) {
