@@ -28,10 +28,6 @@ export async function resolveLanguageServerPath(
 		return packagedPath;
 	}
 
-	if (await isFile(developmentPath)) {
-		return developmentPath;
-	}
-
 	return undefined;
 }
 

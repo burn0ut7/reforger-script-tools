@@ -92,29 +92,13 @@ External clients can select specialized inspection, editing, administration, or
 complete compatibility profiles at process start. Enable Workbench integration
 separately when live editor capabilities are wanted.
 
-The same one-time extension install contributes three Agent Skills to VS Code
-Chat:
-
-- `reforger` for evidence-led research, implementation, compiler validation,
-  reload, and live verification;
-- `reforger-deep-dive` for comprehensive read-only diagnosis and evidence
-  dossiers;
-- `reforger-workbench-edit` for explicitly requested live editor mutations
-  with inspection, confirmation, persistence, and readback.
-
-The skills are plain, client-neutral Open Agent Skills files packaged with the
-extension. Discovering or invoking them does not enable Workbench. With
-Workbench disabled, they use offline Wiki, Game Data, and workspace evidence
-and report live gates as unavailable without contacting or changing Workbench.
-
 For Codex or another MCP client outside VS Code, run **Reforger Script Tools:
 Copy MCP Configuration** and choose Codex TOML or generic MCP JSON. The copied
 entry launches the same bundled runtime with the current workspace and External
 Indexes scope. Copy it again after changing that scope or upgrading the
 extension because external clients do not receive VS Code's native definition
-updates. Clients that support Agent Skills can also consume the packaged
-`skills/` library; the MCP configuration command configures the server only and
-does not modify another client's skill installation.
+updates. The extension configures the MCP server only; Agent Skills are managed
+separately by the client.
 
 
 ## Settings

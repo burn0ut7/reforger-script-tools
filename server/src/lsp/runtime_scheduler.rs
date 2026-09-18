@@ -13,7 +13,7 @@ use super::{
 };
 use crate::analysis_runtime::{AnalysisTask, PositionIndex, TaskClass, TaskIdentity};
 use crate::lexer::{lex, Token};
-use crate::parser::parse_source;
+use crate::parser::parse_lexed_source;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
@@ -469,7 +469,7 @@ impl RuntimeWorkExecutor {
                     self.send_skipped(RuntimeWorkJob::Foreground(job), "cancelled-before-syntax");
                     return;
                 }
-                let syntax = parse_source(job.task.snapshot().text());
+                let syntax = parse_lexed_source(job.task.snapshot().text(), &lexer_tokens);
                 let event = if job.task.is_cancelled() {
                     ServerEvent::ForegroundDocumentSkipped {
                         task: job.task.identity().clone(),

@@ -12,6 +12,7 @@ use crate::index::{GlobalSymbolId, SymbolIndex};
 use crate::index_query::IndexQuery;
 use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 use crate::model::SymbolKind;
+#[cfg(test)]
 use crate::parser::parse_source;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

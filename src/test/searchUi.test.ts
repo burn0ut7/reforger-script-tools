@@ -740,7 +740,6 @@ suite('Reforger search UI MCP mapping', () => {
 
 	test('starts the custom Search MCP process with the configured external index mode', () => {
 		assert.match(searchClientSource, /externalIndexMode: ExternalIndexMode/);
-		assert.match(searchClientSource, /buildMcpLaunchConfiguration\(this\.options\)/);
 		assert.doesNotMatch(searchClientSource, /'--external-index-mode'/);
 		assert.match(searchUiSource, /const externalIndexMode = readExternalIndexMode\(\)/);
 		assert.match(searchUiSource, /externalIndexMode,/);

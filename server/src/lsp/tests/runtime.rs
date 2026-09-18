@@ -165,6 +165,38 @@ fn one_cpu_foreground_lane_advances_background_only_when_foreground_is_idle() {
 }
 
 #[test]
+fn foreground_executor_tokenizes_source_once() {
+    let source = "// current snapshot\nclass Fresh { int value; }";
+    let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 1024));
+    let job = foreground_document_job(
+        &mut runtime,
+        "file:///foreground.c",
+        1,
+        source,
+        Instant::now(),
+    );
+    let (sender, receiver) = mpsc::channel();
+    let executor = RuntimeWorkExecutor::start_with_capacity(
+        sender,
+        RuntimeWorkCapacity {
+            foreground_workers: 0,
+            background_workers: 0,
+        },
+    );
+    let before = crate::lexer::test_lex_call_count();
+    executor.execute(RuntimeWorkJob::Foreground(job));
+    assert_eq!(crate::lexer::test_lex_call_count() - before, 1);
+    let ServerEvent::ForegroundDocumentReady {
+        lexer_tokens, syntax, ..
+    } = receiver.try_recv().expect("completed foreground result")
+    else {
+        panic!("foreground analysis did not complete");
+    };
+    assert_eq!(lexer_tokens, lex(source));
+    assert_eq!(syntax, parse_source(source));
+}
+
+#[test]
 fn shared_executor_prioritizes_ready_semantic_work_over_ready_rich_work() {
     let now = Instant::now();
     let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 2));

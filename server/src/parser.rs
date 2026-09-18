@@ -5,7 +5,14 @@ const MAX_RECURSION_DEPTH: usize = 128;
 
 pub fn parse_source(source: &str) -> Parse {
     let tokens = lex(source);
-    let mut diagnostics = lexer_diagnostics(&tokens);
+    parse_lexed_source(source, &tokens)
+}
+
+/// Parses the complete token stream returned by `lex(source)`. Internal
+/// callers that also retain lexical facts can share that stream without
+/// tokenizing the same immutable source again.
+pub(crate) fn parse_lexed_source(source: &str, tokens: &[Token]) -> Parse {
+    let mut diagnostics = lexer_diagnostics(tokens);
     let mut parser = Parser {
         source,
         tokens,
@@ -33,7 +40,7 @@ fn lexer_diagnostics(tokens: &[Token]) -> Vec<ParseDiagnostic> {
 
 struct Parser<'source> {
     source: &'source str,
-    tokens: Vec<Token>,
+    tokens: &'source [Token],
     position: usize,
     diagnostics: Vec<ParseDiagnostic>,
     recursion_depth: usize,
@@ -2501,6 +2508,22 @@ mod tests {
     use crate::model::SourceFileMetadata;
     use crate::semantic_file::SemanticFile;
     use crate::syntax::SyntaxKind;
+
+    #[test]
+    fn prelexed_parse_preserves_lossless_syntax_and_error_recovery() {
+        for source in [
+            "",
+            "// comment\r\nclass Example { string label = \"café\"; }",
+            "#ifdef WORKBENCH\nclass Example { ref array<int> values; }\n#endif",
+            "class Broken { void Run( { string label = \"unterminated",
+        ] {
+            let tokens = lex(source);
+            let before = crate::lexer::test_lex_call_count();
+            let actual = parse_lexed_source(source, &tokens);
+            assert_eq!(crate::lexer::test_lex_call_count(), before);
+            assert_eq!(actual, parse_source(source), "{source}");
+        }
+    }
 
     fn count_kind(node: &SyntaxNode, kind: SyntaxKind) -> usize {
         let own = usize::from(node.kind == kind);

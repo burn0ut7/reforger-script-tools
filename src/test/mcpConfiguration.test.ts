@@ -6,6 +6,19 @@ import {
 } from '../mcp/mcpConfiguration';
 
 suite('MCP configuration', () => {
+	test('lets the Search UI request specialist tools without changing the AI default', () => {
+		const inputs = {
+			serverPath: '/extension/server',
+			addonSourceInventory: '/storage/graph.json',
+			addonIndexStorage: '/storage/indexes',
+			externalIndexMode: 'loaded' as const,
+		};
+		assert.deepStrictEqual(buildMcpLaunchConfiguration(inputs, 'all').args.slice(0, 3),
+			['mcp', '--tool-profile', 'all']);
+		assert.deepStrictEqual(buildMcpLaunchConfiguration(inputs).args.slice(0, 3),
+			['mcp', '--tool-profile', 'authoring']);
+	});
+
 	test('builds a stable launch independent of a running VS Code process', () => {
 		const launch = buildMcpLaunchConfiguration({
 			serverPath: 'C:\\Extensions\\reforger_language_server.exe',

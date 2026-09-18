@@ -185,17 +185,15 @@ that session. The extension-contributed definition always selects `authoring`;
 external clients can start a separate process with another profile. Profiles
 change only MCP exposure, not implementation ownership or semantic authority.
 
-The extension also contributes three repository-owned Agent Skills through VS
-Code's declarative `chatSkills` interface: `reforger`,
-`reforger-deep-dive`, and `reforger-workbench-edit`. Their Open Agent Skills
-files are packaged under `skills/` with an exact release allowlist. Skill
-discovery is manifest-owned and does not activate the extension, enable
-Workbench, contact its NET API, install a bridge, or mutate editor state. The
-skills describe evidence sequencing, safety gates, stopping conditions, and
-output contracts while the generated MCP catalogue and live `tools/list`
-remain authoritative for tool schemas. Relative references stay inside the
-packaged library so the same files remain portable to other skill-aware MCP
-clients without depending on VS Code prompt behavior.
+The extension's paginated Search UI starts its private MCP process with `all`:
+it needs the specialist symbol, full-text, resource, and relationship tools.
+It uses the same launch-input builder as the native AI definition, whose
+default remains `authoring`. The compact one-hit discovery interface cannot
+replace the Search UI's filtering and pagination contract.
+
+The extension contributes the MCP Runtime and packaged Official Wiki Corpus.
+It does not contribute or package Agent Skills. Client-managed skills are
+outside the extension's runtime and release inputs.
 
 The native definition and the external-client configuration command consume
 one TypeScript launch policy. It resolves the packaged executable, persisted
@@ -480,8 +478,8 @@ page is available and summary counts are exact only when it is false;
 candidates were omitted. This lets an AI decide whether to refine a broad
 search before exact entity, hierarchy, or prefab-context inspection; it does
 not enumerate arbitrary properties, prove every relative, or make a display
-name an identity. The reusable AI workflow is documented in
-[Workbench world-entity relation search](workbench-world-entity-search.md).
+name an identity. The filtering and paging interface is documented in the
+[Workbench entity-search contract](mcp-api/tools/workbench_search_world_entities.md).
 
 The read-only `workbench_search_resources` capability uses the native
 registered-resource database with fixed resource kinds, native text terms, and
@@ -524,7 +522,6 @@ raw NET API payloads, property values, confirmation tokens, or source text.
 | `src/gameData/` | Workbench-loaded graph publication and source-refresh UI | PAC parsing, add-on discovery, or semantic analysis |
 | `src/languageClient/` | Server lifecycle, transport, file notifications, and thin editor bridges | Syntax, lookup, completion ranking, or type reasoning |
 | `src/mcp/` | MCP client configuration from the packaged runtime and stable source/cache inputs | Protocol serving, indexing, or semantic queries |
-| `skills/` | Portable Agent Skill workflows and focused references contributed by the extension | MCP schemas, runtime state, client-specific invocation syntax, or Workbench enablement |
 | `src/workbenchNetApi/gateway/` | Thin TypeScript process bridge from editor compiler features to the bundled Rust Workbench Gateway | NET API framing, VS Code UI, raw endpoint dispatch, or Enfusion language decisions |
 | `src/workbenchNetApi/compiler/` | VS Code scheduling, compiler diagnostic rendering, and Workbench status UI | NET API framing, endpoint discovery, or language-engine diagnostics |
 | `src/workbenchNetApi/integration/` | Setting-owned approval, bootstrap/maintenance orchestration, and progress/notification presentation | Registry/profile/process implementation, NET API framing, or language/index decisions |

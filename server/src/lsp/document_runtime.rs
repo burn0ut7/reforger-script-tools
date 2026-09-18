@@ -12,7 +12,7 @@ use super::{
     clear_diagnostics_message, document_symbol_count, document_symbols_from_cached_analysis,
     file_index_for_source_with_timings, file_uri_path_identity,
     generic_angle_offsets_for_delimiters, lex,
-    lexical_semantic_tokens_for_source_with_bracket_coloring, parse_source,
+    lexical_semantic_tokens_for_source_with_bracket_coloring,
     publish_diagnostics_message, request_document_uri, AdmissionDisposition, AnalysisTask,
     BracketColoringMode, DebugRequestJob, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     DocumentQuery, ExternalIndexSnapshot, FileIndexAnalysis, FileIndexAnalysisTimings,
@@ -22,6 +22,7 @@ use super::{
     MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
 };
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime, UpsertOutcome};
+use crate::parser::parse_lexed_source;
 use serde_json::Value;
 use std::collections::BTreeMap;
 #[cfg(test)]
@@ -148,11 +149,13 @@ impl DocumentRuntime {
         let snapshot = self.runtime.latest(uri).expect("accepted snapshot");
         let document = self.documents.get_mut(uri).expect("open document");
         document.replace(snapshot.clone());
+        let lexer_tokens = lex(snapshot.text());
+        let syntax = parse_lexed_source(snapshot.text(), &lexer_tokens);
         document.install_foreground(
             snapshot.revision(),
             PositionIndex::new(snapshot.text()),
-            lex(snapshot.text()),
-            parse_source(snapshot.text()),
+            lexer_tokens,
+            syntax,
         )
     }
 
@@ -499,11 +502,13 @@ impl DocumentRuntime {
         } else {
             let snapshot = self.runtime.latest(&uri).expect("accepted snapshot");
             let document = self.documents.get_mut(&uri).expect("open document exists");
+            let lexer_tokens = lex(snapshot.text());
+            let syntax = parse_lexed_source(snapshot.text(), &lexer_tokens);
             assert!(document.install_foreground(
                 revision,
                 PositionIndex::new(snapshot.text()),
-                lex(snapshot.text()),
-                parse_source(snapshot.text())
+                lexer_tokens,
+                syntax,
             ));
             let diagnostics = document
                 .syntax()

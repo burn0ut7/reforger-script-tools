@@ -3,7 +3,7 @@ use crate::ast::{ClassMember, Declaration, MethodDecl};
 use crate::index::SymbolIndex;
 use crate::lexer::{lex, Keyword, TextSpan, Token, TokenKind};
 use crate::model::{SourceFileMetadata, SymbolKind};
-use crate::parser::parse_source;
+use crate::parser::parse_lexed_source;
 use crate::scope::LexicalScopeModel;
 use crate::semantic_file::SemanticFile;
 use crate::syntax::{Parse, ParseDiagnostic};
@@ -47,7 +47,7 @@ impl OpenDocument {
         // installs the same state through a `TaskClass::Foreground` worker.
         let positions = PositionIndex::new(document.snapshot.text());
         let lexer_tokens = lex(document.snapshot.text());
-        let syntax = parse_source(document.snapshot.text());
+        let syntax = parse_lexed_source(document.snapshot.text(), &lexer_tokens);
         assert!(document.install_foreground(revision, positions, lexer_tokens, syntax));
         let (analysis, analysis_timings) =
             file_index_for_source_with_timings(document.snapshot.text());
@@ -829,7 +829,7 @@ pub(crate) fn file_index_for_source_with_timings(
     let total_start = Instant::now();
     let lexer_tokens = lex(source);
     let parse_start = Instant::now();
-    let parse = parse_source(source);
+    let parse = parse_lexed_source(source, &lexer_tokens);
     let parse_ms = parse_start.elapsed().as_millis();
     let parse_diagnostics = parse.diagnostics.len();
     let diagnostics = parse.diagnostics.clone();
@@ -883,6 +883,17 @@ mod tests {
     use crate::lsp::hover::hover_report_for_pending_snapshot;
     use crate::lsp::signature_help::signature_help_report_for_pending_snapshot;
     use crate::lsp::LspPosition;
+    use crate::parser::parse_source;
+
+    #[test]
+    fn file_analysis_tokenizes_source_once() {
+        let source = "class Example { void Run() { int value = 1; } }";
+        let before = crate::lexer::test_lex_call_count();
+        let analysis = file_index_for_source(source);
+        assert_eq!(crate::lexer::test_lex_call_count() - before, 1);
+        assert_eq!(analysis.parse, parse_source(source));
+        assert_eq!(analysis.lexer_tokens, lex(source));
+    }
 
     #[test]
     fn pending_request_projections_do_not_relex_or_rewalk_a_large_snapshot() {

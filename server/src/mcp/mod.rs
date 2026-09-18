@@ -1562,8 +1562,8 @@ impl ReforgerMcpServer {
             tokio::task::spawn_blocking(move || catalogue.search(&worker_control, request));
         let page = tokio::select! {
             biased;
-            _ = context.ct.cancelled() => { cancel_search_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); }
-            _ = &mut deadline => { cancel_search_worker(&control, &mut worker).await; return Ok(if cold_initialization { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); }
+            _ = context.ct.cancelled() => { cancel_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); }
+            _ = &mut deadline => { cancel_worker(&control, &mut worker).await; return Ok(if cold_initialization { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); }
             result = &mut worker => match result {
                 Ok(Ok(page)) => page,
                 Ok(Err(GameDataCatalogueSearchError::Unavailable)) => return Ok(tool_error("game_data_unavailable", "Game Data is unavailable for this MCP process.", "Call game_data_status, correct its reported configuration, then retry.")),
@@ -1600,8 +1600,8 @@ impl ReforgerMcpServer {
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
-            _ = context.ct.cancelled() => { cancel_research_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
-            _ = &mut deadline => { cancel_research_worker(&control, &mut worker).await; return Ok(if cold { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
+            _ = context.ct.cancelled() => { cancel_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
+            _ = &mut deadline => { cancel_worker(&control, &mut worker).await; return Ok(if cold { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
             result = &mut worker => result.map_err(|_| McpError::internal_error("Game Data intent-research worker failed", None))?,
         };
         match result {
@@ -1728,8 +1728,8 @@ impl ReforgerMcpServer {
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
-            _ = context.ct.cancelled() => { cancel_text_search_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); }
-            _ = &mut deadline => { cancel_text_search_worker(&control, &mut worker).await; return Ok(deadline_exceeded()); }
+            _ = context.ct.cancelled() => { cancel_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); }
+            _ = &mut deadline => { cancel_worker(&control, &mut worker).await; return Ok(deadline_exceeded()); }
             result = &mut worker => result.map_err(|_| McpError::internal_error("Game Data resource-search worker failed", None))?,
         };
         match result {
@@ -1760,8 +1760,8 @@ impl ReforgerMcpServer {
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
-            _ = context.ct.cancelled() => { cancel_text_search_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); }
-            _ = &mut deadline => { cancel_text_search_worker(&control, &mut worker).await; return Ok(tool_error(DEADLINE_EXCEEDED_CODE, "Game Data full-text search exceeded its bounded deadline.", "Retry explicitly or use semantic Game Data search for declaration lookup.")); }
+            _ = context.ct.cancelled() => { cancel_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); }
+            _ = &mut deadline => { cancel_worker(&control, &mut worker).await; return Ok(tool_error(DEADLINE_EXCEEDED_CODE, "Game Data full-text search exceeded its bounded deadline.", "Retry explicitly or use semantic Game Data search for declaration lookup.")); }
             result = &mut worker => result.map_err(|_| McpError::internal_error("Game Data text-search worker failed", None))?,
         };
         match result {
@@ -1813,8 +1813,8 @@ impl ReforgerMcpServer {
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
-            _ = context.ct.cancelled() => { cancel_research_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
-            _ = &mut deadline => { cancel_research_worker(&control, &mut worker).await; return Ok(if cold { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
+            _ = context.ct.cancelled() => { cancel_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
+            _ = &mut deadline => { cancel_worker(&control, &mut worker).await; return Ok(if cold { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
             result = &mut worker => result.map_err(|_| McpError::internal_error("Game Data member-list worker failed", None))?,
         };
         match result {
@@ -1846,8 +1846,8 @@ impl ReforgerMcpServer {
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
-            _ = context.ct.cancelled() => { cancel_research_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
-            _ = &mut deadline => { cancel_research_worker(&control, &mut worker).await; return Ok(if cold { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
+            _ = context.ct.cancelled() => { cancel_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
+            _ = &mut deadline => { cancel_worker(&control, &mut worker).await; return Ok(if cold { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
             result = &mut worker => result.map_err(|_| McpError::internal_error("Game Data relationship worker failed", None))?,
         };
         match result {
@@ -1937,8 +1937,8 @@ impl ReforgerMcpServer {
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
-            _ = context.ct.cancelled() => { cancel_research_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
-            _ = &mut deadline => { cancel_research_worker(&control, &mut worker).await; return Ok(if cold { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
+            _ = context.ct.cancelled() => { cancel_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
+            _ = &mut deadline => { cancel_worker(&control, &mut worker).await; return Ok(if cold { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
             result = &mut worker => result.map_err(|_| McpError::internal_error("Source relationship worker failed", None))?,
         };
         match result {
@@ -1974,8 +1974,8 @@ impl ReforgerMcpServer {
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
-            _ = context.ct.cancelled() => { cancel_inspection_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
-            _ = &mut deadline => { cancel_inspection_worker(&control, &mut worker).await; return Ok(if cold_initialization { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
+            _ = context.ct.cancelled() => { cancel_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
+            _ = &mut deadline => { cancel_worker(&control, &mut worker).await; return Ok(if cold_initialization { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
             result = &mut worker => result.map_err(|_| McpError::internal_error("Game Data inspection worker failed", None))?,
         };
         match result {
@@ -2004,8 +2004,8 @@ impl ReforgerMcpServer {
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
-            _ = context.ct.cancelled() => { cancel_inspection_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
-            _ = &mut deadline => { cancel_inspection_worker(&control, &mut worker).await; return Ok(if cold_initialization { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
+            _ = context.ct.cancelled() => { cancel_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); },
+            _ = &mut deadline => { cancel_worker(&control, &mut worker).await; return Ok(if cold_initialization { deadline_exceeded() } else { ready_game_data_operation_deadline_exceeded() }); },
             result = &mut worker => result.map_err(|_| McpError::internal_error("Game Data source-read worker failed", None))?,
         };
         match result {
@@ -2055,8 +2055,8 @@ impl ReforgerMcpServer {
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
-            _ = context.ct.cancelled() => { cancel_text_search_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); }
-            _ = &mut deadline => { cancel_text_search_worker(&control, &mut worker).await; return Ok(tool_error(DEADLINE_EXCEEDED_CODE, "Workspace full-text search exceeded its bounded deadline.", "Retry explicitly or narrow the configured workspace roots.")); }
+            _ = context.ct.cancelled() => { cancel_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); }
+            _ = &mut deadline => { cancel_worker(&control, &mut worker).await; return Ok(tool_error(DEADLINE_EXCEEDED_CODE, "Workspace full-text search exceeded its bounded deadline.", "Retry explicitly or narrow the configured workspace roots.")); }
             result = &mut worker => result.map_err(|_| McpError::internal_error("Workspace text-search worker failed", None))?,
         };
         match result {
@@ -2183,24 +2183,6 @@ impl ReforgerMcpServer {
             Err(error) => Ok(workspace_error(error)),
         }
     }
-}
-
-async fn cancel_inspection_worker<T>(
-    control: &IndexBuildControl,
-    worker: &mut tokio::task::JoinHandle<
-        Result<T, crate::game_data_inspection::GameDataInspectionError>,
-    >,
-) {
-    control.cancel();
-    let _ = tokio::time::timeout(Duration::from_millis(CANCELLATION_JOIN_GRACE_MS), worker).await;
-}
-
-async fn cancel_research_worker<T, E>(
-    control: &IndexBuildControl,
-    worker: &mut tokio::task::JoinHandle<Result<T, E>>,
-) {
-    control.cancel();
-    let _ = tokio::time::timeout(Duration::from_millis(CANCELLATION_JOIN_GRACE_MS), worker).await;
 }
 
 async fn cancel_reforger_search_worker(
@@ -2699,22 +2681,6 @@ fn inspection_error(error: crate::game_data_inspection::GameDataInspectionError)
     }
 }
 
-async fn cancel_search_worker(
-    control: &IndexBuildControl,
-    worker: &mut tokio::task::JoinHandle<Result<GameDataSearchPage, GameDataCatalogueSearchError>>,
-) {
-    control.cancel();
-    let _ = tokio::time::timeout(Duration::from_millis(CANCELLATION_JOIN_GRACE_MS), worker).await;
-}
-
-async fn cancel_text_search_worker<T, E>(
-    control: &IndexBuildControl,
-    worker: &mut tokio::task::JoinHandle<Result<T, E>>,
-) {
-    control.cancel();
-    let _ = tokio::time::timeout(Duration::from_millis(CANCELLATION_JOIN_GRACE_MS), worker).await;
-}
-
 fn search_error(message: &str) -> CallToolResult {
     let (code, recovery) = if message == "stale cursor" {
         ("stale_cursor", "Repeat the search without the cursor.")
@@ -2855,16 +2821,12 @@ fn ready_game_data_operation_deadline_exceeded() -> CallToolResult {
     )
 }
 
-async fn cancel_worker(
+async fn cancel_worker<T>(
     control: &IndexBuildControl,
-    initialization: &mut tokio::task::JoinHandle<Result<GameDataStatus, String>>,
+    worker: &mut tokio::task::JoinHandle<T>,
 ) {
     control.cancel();
-    let _ = tokio::time::timeout(
-        Duration::from_millis(CANCELLATION_JOIN_GRACE_MS),
-        initialization,
-    )
-    .await;
+    let _ = tokio::time::timeout(Duration::from_millis(CANCELLATION_JOIN_GRACE_MS), worker).await;
 }
 
 fn initialization_deadline_ms() -> u64 {

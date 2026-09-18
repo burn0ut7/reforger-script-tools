@@ -49,11 +49,14 @@ type ConfigurationFormat = 'generic' | 'codex';
 const genericChoice = 'Generic MCP JSON';
 const codexChoice = 'Codex config.toml';
 
-export function buildMcpLaunchConfiguration(inputs: McpLaunchInputs): McpLaunch {
+export function buildMcpLaunchConfiguration(
+	inputs: McpLaunchInputs,
+	toolProfile: 'authoring' | 'all' = 'authoring',
+): McpLaunch {
 	const args = [
 		'mcp',
 		'--tool-profile',
-		'authoring',
+		toolProfile,
 		'--addon-source-inventory',
 		inputs.addonSourceInventory,
 		'--addon-index-storage',

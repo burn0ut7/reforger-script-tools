@@ -1,0 +1,402 @@
+# Reforger Script Tools architecture review — 2026-09-18
+
+Baseline: `2fb63cca`, branch `MCP`. Review scope: extension activation and
+launch policy, Search UI, document analysis, MCP execution, add-on/cache
+selection, Workbench ownership, developer tooling, and documentation routing.
+This is a source-led architectural review, not exhaustive proof of every
+language feature or live Workbench operation. No ADR files were present.
+
+## Changes made
+
+| Change | Before → after | Compatibility and verification |
+| --- | --- | --- |
+| Reuse lexical tokens | Each foreground/semantic stage lexed directly, then the parser lexed again → parser borrows that stage's existing token stream | Same parser, diagnostics, syntax construction, and cancellation checkpoints; regression checks cover tokenization count and malformed-source recovery. Foreground and semantic stages still parse independently. |
+| Consolidate MCP cancellation | Five result-type-specific helpers → one generic helper | Same `IndexBuildControl` cancellation and 100 ms join grace; request deadlines, errors, and admission ownership are unchanged. The two-authority search helper remains distinct. |
+| Remove executable substitution | Missing packaged runtime could select Cargo output in Production/Test → those modes require the packaged executable | Development keeps its existing development-first, packaged-second behavior. This matches the documented self-contained package contract. |
+| Repair Search UI launch profile | Paginated Search UI launched `authoring`, which rejects its specialist tools → private Search UI process explicitly selects `all` | Native AI provider/configuration retains `authoring`; no new setting or parallel launch builder. Added real-process semantic/text search acceptance. |
+| Remove retired skill tooling | Three orphaned validators required absent packaged skills → deleted `tools/agent-skills.mjs`, its test, and `tools/check-agent-skills.mjs` | Package manifest, VSIX allowlist, and existing activation tests already exclude these skills. Client-managed skills and `.codex/` are untouched. Removed 378 lines of obsolete tooling. |
+| Remove repeated checks and stale routes | `pretest` repeated lint already run by `compile`; documentation index had 19 absent targets → one lint pass and existing document routes | Created this journal at the already-designated review path and removed the other 18 broken index entries. Corrected obsolete skill-packaging claims in README and owning docs. |
+
+## Prioritized remaining work
+
+Recommendation strength indicates confidence in investigating the seam, not
+permission to delete behavior before its acceptance conditions are met.
+
+| Priority | Candidate | Strength | Reason to defer implementation |
+| --- | --- | --- | --- |
+| 1 | One external scope policy for symbols and resources | Strong | Must specify offline/stale resource semantics and preserve source validation. |
+| 2 | One MCP worker lifetime policy | Strong | Cancellation and concurrency changes require stalled-worker stress tests. |
+| 3 | Remove cross-index candidate substitution | Strong | Must prove every candidate carries the correct owner, including fixtures and single-index callers. |
+| 4 | Reuse foreground syntax in semantic analysis | Strong | Needs revision/cancellation and memory measurements, not an extra mutable cache. |
+| 5 | Retire overlapping cache metadata formats | Worth exploring | Headers and locator tables deliberately avoid expensive warm-start reads. |
+| 6 | Migrate compatibility tools by caller contract | Worth exploring | Search UI still uses specialist search; compact discovery is not equivalent. |
+| 7 | Reduce Search UI caching and lifecycle complexity | Worth exploring | Page caches support back-navigation and cursor traversal; measure retained memory first. |
+| 8 | Deepen Workbench internals at existing seams | Worth exploring | Live compilation/reload/recovery acceptance was unavailable. |
+| 9 | Remove handwritten comment parsing from Search previews | Worth exploring | Preserve preview quality and latency through Rust-owned lexical facts. |
+
+## 1. One external scope policy for symbols and resources
+
+**Files:** `server/src/game_data_catalogue.rs::initialize_catalogue`,
+`server/src/resource_catalogue.rs::ResourceCatalogue::from_config_for_addons`,
+`server/src/addon_sources.rs::read_cached_combined_addon_sources`.
+
+**Problem:** `all` has two implementations. Symbol search loads every
+compatible cached add-on index via `load_all_cached_addon_indexes`. Resource
+search requires an inventory and tries `read_loaded_addon_sources`, then
+`read_loaded_addon_sources_allow_stale` on any error. Thus the same requested
+mode can select different add-ons or fail on different prerequisites. This is
+observable source divergence; this review did not reproduce it against a
+complete live resource corpus.
+
+**Before / after:**
+
+```text
+Before: mode --> symbol catalogue --> compatible caches
+             --> resource catalogue --> live inventory --> stale inventory
+After:  mode --> one resolved add-on scope --> symbol and resource projections
+```
+
+**Solution:** Deepen the add-on scope module so both adapters consume the same
+identity and authority decision. Keep packed-resource reading and semantic
+index loading separate. Explicitly decide when a missing physical root is a
+stale resource, unavailable resource, or an excluded add-on.
+
+**Benefits:** Locality for scope decisions; leverage for LSP, MCP symbols, and
+resources without duplicating source acquisition.
+
+**Acceptance:** Cover `loaded`, `all`, and `none` with missing inventory,
+stale roots, duplicate GUID instances, workspace exclusions, partial caches,
+and one corrupt cache. Assert identical selected identities where the contract
+promises them, explicit availability differences, and unchanged warm-start I/O.
+Do not remove the deliberate offline index feature.
+
+## 2. One MCP worker lifetime policy
+
+**Files:** `server/src/mcp/mod.rs::{search_official_wiki,
+search_game_data_symbols,research_game_data,search_reforger,
+blocking_workbench_call,cancel_worker}`;
+`server/tests/mcp_stdio.rs` cancellation/admission tests.
+
+**Problem:** Cancellation helper duplication is removed, but admission still
+has two implementations. Wiki search and several older catalogue operations
+hold `_permit` in the async request; intent research, unified search, and
+Workbench calls move it into the blocking worker. An async request can return
+after its bounded cancellation join while a non-cooperative worker remains
+alive. In the former arrangement the permit no longer bounds that worker's
+lifetime. This is a control-flow risk, not a measured production overload.
+
+**Before / after:**
+
+```text
+Before: request owns permit OR blocking worker owns permit
+After:  admitted blocking work owns permit until that work actually exits
+```
+
+**Solution:** Establish one internal execution policy with explicit
+per-operation deadlines and error projection. Preserve separate cancellation
+controls where authorities differ. Avoid a configurable scheduler framework.
+
+**Benefits:** Locality for cancellation/admission invariants; leverage across
+tool families while preserving each public interface.
+
+**Acceptance:** Inject workers that ignore cancellation beyond the join grace;
+repeatedly cancel and time out each affected family. Assert actual live-worker
+count remains bounded, ping remains responsive, EOF shuts down, cancelled
+results cannot publish, and Workbench mutations retain their distinct effects.
+
+## 3. Remove cross-index candidate substitution
+
+**Files:** `server/src/lsp/external_indexes.rs::ExternalIndexes::for_candidate`;
+callers in `hover.rs`, `debug_hover.rs`, and `semantic_tokens.rs`.
+
+**Problem:** The candidate's `source_kind` chooses an index, but absence falls
+through `.or(self.workspace).or(self.game_data)`. Callers then use the
+candidate's symbol ID in the selected index. This can hide an ownership defect
+and potentially interpret an ID in another index. Production reachability is
+not established; `Unknown` and `Fixture` metadata and single-index report
+entry points need examination before removing it.
+
+**Before / after:**
+
+```text
+Before: candidate owner --> matching index? --> workspace? --> game data?
+After:  candidate owner --> that captured index, or explicit unavailable
+```
+
+**Solution:** Make candidate ownership sufficient to choose its captured
+index. Remove substitution only after all producers and developer reports
+preserve that fact. Do not special-case language-feature names.
+
+**Benefits:** Better locality for symbol identity and leverage for every
+feature using the same resolution result.
+
+**Acceptance:** Test colliding numeric IDs across workspace/Game Data,
+unavailable owners, layered indexes, fixture sources, hover, static-constant
+coloring, and debug reports. Verify that a missing owner never selects a
+different declaration and ordinary navigation remains identical.
+
+## 4. Reuse foreground syntax in semantic analysis
+
+**Files:** `server/src/lsp/runtime_scheduler.rs::RuntimeWorkExecutor::execute`,
+`server/src/lsp/open_documents.rs::{OpenDocument,FileIndexAnalysis,
+file_index_for_source_with_timings}`, `server/src/lsp/document_runtime.rs`.
+
+**Problem:** The completed change removes repeated lexing within each stage.
+The foreground worker still builds tokens and a parse, and the semantic worker
+later builds them again for the same revision. `OpenDocument` retains syntax
+and foreground facts alongside `FileIndexAnalysis`'s parse and tokens.
+
+**Before / after:**
+
+```text
+Before: snapshot --> foreground lex/parse --> foreground publication
+                --> semantic lex/parse --> semantic publication
+After:  snapshot --> immutable lexical/syntax facts --> both publications
+```
+
+**Solution:** Carry immutable syntax from admitted foreground work into semantic
+work while keeping the existing stage scheduling and publication gates.
+The deletion test favors removing repeated construction; it does not favor
+collapsing latency-sensitive foreground work into the slower semantic stage.
+
+**Benefits:** Depth in the snapshot module, locality of revision ownership, and
+less duplicate CPU/allocation work without another feature cache.
+
+**Acceptance:** Measure large-file edit latency, retained bytes, and allocation
+counts. Exercise superseded edits, cancellation, closed documents, parser
+errors, overload, and external-index changes. A mutable shared parse or
+request-time synchronous rebuild would violate the current contract.
+
+## 5. Retire overlapping cache metadata formats
+
+**Files:** `server/src/addon_sources.rs::{cached_manifest_descriptors,
+scan_cached_manifest_descriptors,load_cached_source_revision,
+read_project_dependency_scope_guids}`; `server/src/index_cache.rs`;
+`src/gameData/addonIndexReport.ts::readAddonCacheHeaders`.
+
+**Problem:** Selection/navigation spans `cache-catalogue.json`,
+`manifest-header.json`, `manifest.json`, and the self-describing binary plus
+optional locator section. Missing catalogue triggers a directory scan;
+missing headers can trigger full-manifest reads; absent binary locators trigger
+JSON locator registration. Header corruption and header absence do not always
+have the same repair policy. TypeScript's diagnostic report separately reads
+the metadata pair.
+
+**Before / after:**
+
+```text
+Before: catalogue --> scan --> header --> full manifest
+        navigation --> header --> binary locators OR JSON locators
+After:  one versioned persisted instance contract
+        --> derived selection catalogue and diagnostic presentation
+```
+
+**Solution:** Audit all current writers before selecting one metadata authority
+for a future cache version. Make repair an explicit reconstruction path and
+retire old readers at a declared version transition. Preserve a compact
+selection catalogue if it avoids opening every instance.
+
+**Benefits:** Locality for identity/version validation; fewer cascading readers
+and a smaller test surface. A separate diagnostic view need not become another
+authority.
+
+**Acceptance:** Warm startup must not decode full manifests or locators;
+source reads must still verify revision/digest; partial/corrupt caches must not
+discard healthy instances. Benchmark first navigation and offline cold/warm
+startup. Existing tests include
+`one_corrupt_warm_cache_does_not_discard_other_cached_instances` and
+`dependency_cache_prefers_unpacked_source_for_a_duplicate_guid`.
+Do not simply delete the fast header/catalogue as apparent duplication.
+
+## 6. Migrate compatibility tools by caller contract
+
+**Files:** `server/src/mcp/mod.rs::{McpToolProfile,full_tool_catalogue,
+call_tool_by_name}`, `src/searchPrototype/mcpSearchClient.ts::searchToolFor`,
+`server/src/source_relationships.rs`, `server/src/workspace_catalogue.rs`.
+
+**Problem:** The compact discovery/generic symbol interface coexists with
+authority-specific compatibility tools. The Search UI still calls paginated
+`search_game_data_symbols`, `search_workspace_symbols`, text/resource tools,
+and relationship queries. The profile bug fixed in this review demonstrates
+that an exposed tool list and an actual caller's needs can diverge.
+Generic symbol operations already dispatch into the same catalogue owners;
+the names alone are not proof of two semantic implementations.
+
+**Before / after:**
+
+```text
+Before: compact tools + compatibility tools + specialist Search UI callers
+After:  compact discovery + explicit paginated specialists
+        + generic exact-symbol handoffs; retire only superseded aliases
+```
+
+**Solution:** Inventory callers and distinguish aliases from feature-bearing
+specialists. Migrate exact inspection/member aliases through the existing
+generic handoffs where equivalent; state a supported-client removal condition.
+Retain pagination, scopes, filters, and relationship evidence semantics.
+
+**Benefits:** A smaller protocol interface with the same module depth;
+locality in the shared catalogue implementation.
+
+**Acceptance:** Compare generated schemas, errors, cursor binding, source
+handoffs, filters, and Search UI behavior through real stdio processes.
+Replacing paginated search with `search_reforger`'s one hit per authority would
+remove features and is not an acceptable cleanup.
+
+## 7. Reduce Search UI caching and lifecycle complexity
+
+**Files:** `src/searchPrototype/mcpSearchClient.ts::{search,sourceRange,
+searchPage,searchRelationships,searchResources,startProcess}`;
+`src/searchPrototype/searchUiPrototype.ts::{getClient,restartSearchScope}`;
+`server/src/{workspace_catalogue,game_data_catalogue}.rs` text result caches.
+
+**Problem:** The TypeScript client owns up to 32 query page caches, repeated
+cursor traversal, source merging, and child-process/revision lifecycle. Rust
+also caches query results; LSP and the Search UI's independent MCP process hold
+their own workspace/index snapshots. These are separate costs and freshness
+contracts, not automatically redundant implementations.
+
+**Before / after:**
+
+```text
+Before: webview state --> TS query/page cache --> MCP result cache --> sources
+After:  webview state --> minimal retained pages/cursors --> same MCP authority
+```
+
+**Solution:** Measure cache retention and navigation reuse before reducing TS
+retention or sharing cursor bookkeeping across the three search modes. Keep
+the standalone MCP process contract; do not make external MCP clients depend
+on VS Code's LSP process. Renaming `searchPrototype` alone is cosmetic.
+
+**Benefits:** Locality for paging/freshness, less retained duplicated output,
+and a simpler presentation adapter if measurements support the change.
+
+**Acceptance:** Back/forward pages, mixed sources, stale cursors, changed
+workspace scope, cancelled previews, and process restarts must retain behavior.
+Measure memory after many queries and latency of revisited pages. Do not trade
+cached navigation for repeated full-corpus scans.
+
+## 8. Deepen Workbench internals at existing seams
+
+**Files:** `server/src/workbench.rs`, `server/src/workbench_bridge.rs`,
+`server/src/workbench_capture.rs`, `server/src/mcp/mod.rs`,
+`src/workbenchNetApi/gateway/workbenchGateway.ts`.
+
+**Problem:** `workbench.rs` has 13,475 lines and MCP approximately 8,600,
+including tests. Workbench combines transport, discovery, managed files,
+process lifecycle, operation projection, confirmation state, and logs. A
+mutation crosses these responsibilities, making a local change expensive to
+understand. File length identifies a review hotspot, not a reason to split it
+into shallow per-operation wrappers.
+
+**Before / after:**
+
+```text
+Before: many typed operations --> one large mixed implementation
+After:  same typed interface --> transport / managed package / lifecycle
+                                 / editor operations at existing seams
+```
+
+**Solution:** Extract cohesive internal ownership without growing the public
+interface or adding another gateway. Start with a responsibility whose tests
+already cross one seam. Preserve one Workbench-owned discovery route and one
+controller-owned mutation/recovery path.
+
+**Benefits:** Locality for effects and recovery; deeper modules that hide
+implementation rather than move it into many caller-visible objects.
+
+**Acceptance:** Native validation, reload generation/log evidence, public MCP
+round trips, exact-identity process operations, persistence/readback, and
+failure recovery. Keep save-first force-stop recovery and managed-file
+migration until supported upgrade/recovery cases can be preserved another way.
+The unavailable live endpoint prevented acceptance of such a refactor here.
+
+## 9. Remove handwritten comment parsing from Search previews
+
+**Files:** `src/searchPrototype/mcpSearchClient.ts::{stripSourceComments,
+sourcePreviewLine,sourceContextPreview}`, `src/searchPrototype/semanticPreview.ts`,
+`server/src/lsp/preview_context.rs`, `server/src/lexer.rs`.
+
+**Problem:** TypeScript tracks quotes, escapes, and block/line comment markers
+to choose and trim preview lines. Multi-line previews call this scanner once
+per line, resetting its block-comment state. Rust already owns lexical facts
+and declaration-aware preview context. This is a second source-classification
+path in the editor shell, even though its output is presentation only.
+
+**Before / after:**
+
+```text
+Before: Rust source/context --> TS comment scanner --> preview
+After:  Rust source/context plus lexical spans --> presentation-only preview
+```
+
+**Solution:** Use existing Rust lexical/semantic information to choose preview
+content, retaining raw source for evidence reads. Delete the handwritten
+scanner only after all preview callers can obtain the needed facts without a
+new full-document analysis or per-result process round trip.
+
+**Benefits:** Locality for comment/string interpretation and a thinner adapter;
+the same lexical interface gains leverage in editor and search presentation.
+
+**Acceptance:** Multi-line block comments, escaped quotes, comment delimiters
+inside strings, comment-only hits, malformed source, and bounded source reads.
+Compare first-page preview latency and request counts; do not delay every row
+waiting for unnecessary rich semantic analysis.
+
+## Fallbacks deliberately retained
+
+
+| Path | Why deletion is not behavior-preserving |
+| --- | --- |
+| Native typing after a declined/unavailable formatting request | Enter/Tab/Space must still function when the language engine cannot supply an edit. |
+| Current-revision lexical results while semantic work is pending | Keeps editing useful without borrowing stale semantic facts. |
+| Offline dependency scope followed by live Workbench reconciliation | An intentional startup feature; authority changes and immutable publication are explicit. |
+| Cache repair from authoritative source | Required after missing/incompatible/corrupt cached data; it is not a second language engine. |
+| Status polling and missing-profile recovery | Workbench supplies no equivalent push lifecycle in the current contract. |
+| Bounded locked-binary replacement retries | Windows process/file locks are an observed development constraint. |
+| Separate LSP and standalone MCP adapters | They reuse the same Rust engine and have different client/process lifetimes. |
+
+## Evidence and verification
+
+Source and existing tests establish the implementation facts above. Primary
+Reforger evidence consulted: packaged Official Wiki `Script Editor`, lines
+1–11, and `Enforce Script Syntax`, lines 10–74, corpus
+`ow1:d40df5e4830cab07dbc5a9c1c06beadd521c4214315d43176954e54c27f682e7`.
+The Game Data status reported 6,678 indexed files, 146,931 symbols, one lossy
+source file, and one loaded add-on without a compatible index. These are
+coverage observations, not proof of all language behavior. An exact
+`ScriptEditor` search was ambiguous and was not used to justify engine calls.
+No new engine-facing identifiers or bridge scripts were introduced.
+
+`workbench_status` returned `workbench_unavailable` at the configured endpoint,
+support reference `wb-82840-1789742692719-2`. No live compiler, reload, editor,
+or runtime acceptance is claimed.
+
+- Passed: TypeScript type checking, lint, 30-file bridge-style check,
+  Rust `cargo check --features test-hooks --lib --bins --tests`, TypeScript test
+  compilation, extension bundling, 73 focused VS Code tests, and diff
+  whitespace checking. The focused suites cover executable selection, launch
+  configuration, Search UI mapping, real-process semantic/text search, native
+  MCP discovery, and the absence of packaged Agent Skills. All eight links in
+  the documentation index resolve, and active code/build/docs have no remaining
+  references to the deleted validator interface.
+- Blocked: `npm run compile` and `npm run test:server` at the missing Microsoft
+  `link.exe`. The current Rust changes were statically checked, including test
+  targets, but their tests could not execute. VS Code real-process acceptance
+  used the pre-existing packaged Rust binary; it does not validate the changed
+  Rust parser/cancellation code. Fresh-binary VSIX acceptance remains pending.
+- Local logs: `.cache/reports/deep-review-rust-tests.log` and
+  `.cache/reports/deep-review-extension-tests.log`. The first focused run had
+  71 passes and one obsolete exact-source-text assertion failure; that assertion
+  was removed in favor of the new real-process acceptance, and the final run
+  had 73 passes with no failures.
+- No end-to-end performance improvement is claimed from operation-count
+  reduction alone. Run the added Rust regressions and full server suite with
+  the C++ build toolchain available before release.
+
+## Top recommendation
+
+Resolve [external scope selection](#1-one-external-scope-policy-for-symbols-and-resources)
+first: it contains two present implementations of the same user setting,
+making it a better consolidation target than deleting intentional recovery or
+splitting a large file for appearance.

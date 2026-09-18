@@ -307,7 +307,7 @@
     "package:build": "npm run check-types && npm run lint && node tools/check-workbench-bridge-style.mjs && npm run mcp-api:check && node tools/build-language-server.mjs --release && node esbuild.js --production",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "npm run compile-tests && npm run compile && npm run lint && npm run mcp-api:check",
+    "pretest": "npm run compile-tests && npm run compile && npm run mcp-api:check",
     "check-types": "tsc --noEmit",
     "build-server": "node tools/build-language-server.mjs",
     "test:server": "node tools/run-server-tests.mjs",

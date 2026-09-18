@@ -17,10 +17,9 @@ From the repository root:
 | `npm run check-types` | TypeScript type checking. |
 | `npm run lint` | Extension-source linting. |
 | `npm run compile` | Type checking, linting, the bundled Rust server, and the extension bundle. |
-| `npm test` | Agent Skill contracts, extension test setup, the normal workspace suite, an isolated no-workspace native MCP/skill discovery acceptance, and packaged-runtime acceptance; its pretest step compiles tests and runs the full compile path. |
+| `npm test` | Extension test setup, the normal workspace suite, isolated no-workspace native MCP discovery acceptance, and packaged-runtime acceptance; its pretest step compiles tests and runs the full compile path. |
 | `npm run package` | Production Rust server and production extension bundle. |
-| `npm run test:agent-skills` | Validate skill frontmatter, contribution names, client neutrality, the complete relative-reference graph, and named tools/material fields against the generated MCP catalogue. |
-| `npm run test:packaged-official-wiki` | Build a VSIX, verify every Official Wiki and Agent Skill Markdown byte is packaged, verify installed skill references, and launch the installed MCP runtime from an unrelated working directory. |
+| `npm run test:packaged-official-wiki` | Build a VSIX, verify every Official Wiki Markdown byte is packaged, and launch the installed MCP runtime from an unrelated working directory. |
 | `npm run mcp-api:generate` | Regenerate the MCP guide and per-tool contracts from live Rust descriptors. |
 | `npm run mcp-api:check` | Fail when the guide or generated contract set has drifted. |
 
@@ -47,6 +46,10 @@ The development extension launches
 `server/target/debug/reforger_language_server.exe`; `npm run compile` rebuilds
 and restores it. Packaged installations use the executable copied beneath
 `dist/server/`.
+
+Only Development mode may select the development executable. Production and
+Test mode require the platform-specific packaged executable; a missing package
+must remain unavailable rather than silently selecting a local Cargo output.
 
 The Rust development profile retains debug information and assertions but uses
 optimized code. This keeps the bundled development language server
@@ -244,24 +247,6 @@ operations in `all`.
 The generated [MCP API Reference](mcp-api.md) is the inspectable capability
 index and router to exact per-tool contracts; standard `tools/list` remains
 authoritative at runtime.
-
-## Agent Skills library
-
-`skills/` is the canonical, client-neutral Agent Skills library shipped in the
-VSIX. `package.json` contributes exactly three entry points through
-`contributes.chatSkills`: the general `reforger` evidence-to-runtime workflow,
-the read-only `reforger-deep-dive` dossier workflow, and the guarded
-`reforger-workbench-edit` mutation workflow. Each `SKILL.md` loads only the
-focused relative references required by its route. No skill duplicates MCP
-JSON schemas or assumes client-specific invocation syntax.
-
-`tools/agent-skills.mjs` owns the release file manifest and validator. It
-rejects malformed metadata, unstable names, missing or escaping references,
-unreachable or unlisted files, unknown tool names, material field drift, and
-client-specific dependencies. `tools/check-package-contents.mjs` uses the same
-manifest for the final VSIX allowlist. Add or remove a packaged skill file only
-by updating its deliberate reference edge and that shared manifest, then run
-`npm run test:agent-skills`, `npm run compile`, and the final package test.
 
 ## Official Wiki Corpus
 

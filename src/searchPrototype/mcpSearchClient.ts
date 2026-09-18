@@ -1004,7 +1004,8 @@ export class McpSearchClient {
 	}
 
 	private async startProcess(): Promise<void> {
-		const launch = buildMcpLaunchConfiguration(this.options);
+		// The paginated Search UI uses the specialist search tools in `all`.
+		const launch = buildMcpLaunchConfiguration(this.options, 'all');
 		const child = spawn(launch.command, launch.args, {
 			stdio: ['pipe', 'pipe', 'pipe'],
 			windowsHide: true,

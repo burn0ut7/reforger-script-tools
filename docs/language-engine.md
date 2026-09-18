@@ -61,6 +61,11 @@ indexing cannot change the meaning of an in-flight response. Do not introduce
 per-feature revision tables or mutable shared feature state that bypasses this
 model.
 
+When an analysis stage needs both lexical tokens and syntax, it passes the
+complete token stream for that immutable source into the parser. The parser
+borrows those tokens rather than lexing the source again. Foreground and
+semantic stages still have independent scheduling and cancellation lifetimes.
+
 Workspace-file notifications build one compiler-owned contribution on the
 incoming path and enqueue it for a coalescing workspace-generation worker.
 Multiple changes to the same batch are aggregated once, then published as one
