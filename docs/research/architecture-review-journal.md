@@ -31,7 +31,8 @@ an implementation priority. Commit and push coherent verified slices on `MCP`.
 | 3. Candidate index ownership | Completed: exact runtime owners replace substitution; build and 1,057 Rust tests pass. |
 | 4. Shared foreground syntax | Completed: shared immutable syntax; profile improves allocations/retention, build and 1,058 Rust tests pass. |
 | 5. Cache metadata | Verified: retained compact/repair formats, removed unreachable decode, corrected cache-only provenance. Build and 1,058 Rust tests pass; first-navigation measurement follows the priority 6 report repair. |
-| 6–9. Remaining architecture priorities | Queued in the order below. |
+| 6. Compatibility tools | Completed: shared dispatch, unchanged contracts, current report coverage; build, 1,059 Rust tests, API check, and five report tests pass. Real-cache navigation correctly rejects a changed pack. |
+| 7–9. Remaining architecture priorities | Queued in the order below. |
 | Clean-window MCP activation | Reproduce and diagnose the failed acceptance gate. |
 | Final acceptance | Full Rust/extension/package checks and feasible live Workbench acceptance. |
 
@@ -287,9 +288,14 @@ for the manifests. This diagnostic-reader comparison is not Rust startup
 timing; it confirms the scale of metadata avoided. The real-process baseline
 loaded 146,931 symbols: initial Game Data status took 136.83 ms, repeated status
 median 2.82 ms, and two fresh processes had first-status median 123.80 ms.
-It did not measure first navigation: the performance runner omitted an explicit
-tool profile and had no scenarios for the compact generic tools. Repairing that
-caller is part of priority 6, after which navigation will be measured.
+The initial report did not measure first navigation: it omitted an explicit
+tool profile and had no scenarios for the compact generic tools. The repaired
+priority 6 report reaches all 23 tools, but first navigation remains unavailable:
+the installed `data007.pak` differs from the recorded cache revision. Source
+reads and source-backed references correctly return `source_evidence_unavailable`.
+All declared source roots and pack files exist; the rejection is an integrity
+check, not missing-path discovery. Do not bypass that check to obtain a timing.
+Reconcile through the authoritative Workbench scope before repeating navigation.
 
 **Implemented cleanup:** Removed the unreachable full-manifest retry after
 header projection decoding fails: a valid full manifest already contains every
@@ -344,6 +350,28 @@ startup. Existing tests include
 Do not simply delete the fast header/catalogue as apparent duplication.
 
 ## 6. Migrate compatibility tools by caller contract
+
+**Completed:** Six exact-symbol aliases now adapt their existing inputs into
+the generic authority-selected dispatch. Their names, schemas, error messages,
+filters, and cursor contracts remain compatible. Paginated search remains a
+supported specialist surface; public exact aliases can be retired only after
+supported callers migrate. The generated API guidance now makes that distinction.
+
+A real stdio regression compares both sources across inspection, member and
+relationship pages, cross-name cursor use, changed filters, stale references,
+and unknown arguments. The performance harness explicitly launches `all`,
+covers the 23 current non-Workbench tools (including generic calls for both
+sources), and removes the obsolete example-search scenario. Fresh processes
+measure first navigation before a text scan can warm source locators. The five
+deterministic report checks, focused parity check, production build, all 1,059
+Rust tests, and generated API check pass. Generated tool schemas are unchanged.
+The real-cache report reaches all 23 tools, and exposes the changed-pack source
+integrity rejection described in priority 5. This is not a successful navigation
+sample or a zero-latency measurement. Logs: `.cache/reports/review-alias-{compile,
+server,api,report-tests}.log`; the real-cache report is
+`.cache/reports/review-alias-script-runtime.json`.
+
+The original investigation below records the problem and acceptance rationale.
 
 **Files:** `server/src/mcp/mod.rs::{McpToolProfile,full_tool_catalogue,
 call_tool_by_name}`, `src/searchPrototype/mcpSearchClient.ts::searchToolFor`,

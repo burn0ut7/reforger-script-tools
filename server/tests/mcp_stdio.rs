@@ -516,6 +516,83 @@ fn mcp_stdio_initializes_lists_and_reports_game_data_status() {
 }
 
 #[test]
+fn exact_symbol_aliases_preserve_generic_results_errors_and_cursors() {
+    fn call(client: &mut McpClient, id: &mut u64, name: &str, arguments: Value) -> Value {
+        *id += 1;
+        client.send(json!({"jsonrpc":"2.0", "id":*id, "method":"tools/call",
+            "params":{"name":name, "arguments":arguments}}));
+        let response = client.response(*id);
+        response.get("result").or_else(|| response.get("error")).unwrap().clone()
+    }
+
+    let fixture = TempFixture::new("exact_symbol_aliases");
+    let scripts_root = fixture.path().join("game-data").join("Scripts");
+    let workspace_root = fixture.path().join("workspace").join("Scripts");
+    for root in [&scripts_root, &workspace_root] {
+        fs::create_dir_all(root).unwrap();
+        fs::write(root.join("Fixture.c"),
+            "class AliasFixture { int First; int Second; int Third; }\nclass DerivedOne : AliasFixture {}\nclass DerivedTwo : AliasFixture {}\n").unwrap();
+    }
+    let game_data = build_game_data_cache(&scripts_root, &fixture.path().join("cache/index.bin"));
+    let mut arguments = game_data.arguments;
+    arguments.extend(["--workspace-scripts".to_string(), workspace_root.to_string_lossy().into_owned()]);
+    let mut client = McpClient::spawn_owned(&arguments);
+    client.initialize(1);
+    let mut id = 1;
+    for (source, prefix) in [("gameData", "game_data"), ("workspace", "workspace")] {
+        let search = call(&mut client, &mut id, &format!("search_{prefix}_symbols"), json!({"query":"AliasFixture", "kinds":["class"]}));
+        let symbol_ref = search.pointer("/structuredContent/results/0/symbolRef").unwrap();
+        for (generic, alias, extra) in [
+            ("inspect_symbol", format!("inspect_{prefix}_symbol"), json!({})),
+            ("list_symbol_members", format!("list_{prefix}_symbol_members"), json!({"kinds":["field"], "limit":1})),
+            ("query_symbol_relationships", format!("query_{prefix}_symbol_relationships"), json!({"relationshipKinds":["derivedType"], "limit":1})),
+        ] {
+            let mut legacy_args = extra.clone();
+            legacy_args["symbolRef"] = symbol_ref.clone();
+            let mut generic_args = legacy_args.clone();
+            generic_args["source"] = json!(source);
+            let legacy = call(&mut client, &mut id, &alias, legacy_args.clone());
+            let current = call(&mut client, &mut id, generic, generic_args.clone());
+            assert_eq!(legacy["isError"], false, "{alias}: {legacy}");
+            assert_eq!(legacy, current, "{alias} must preserve the generic result");
+            if generic != "inspect_symbol" {
+                let cursor = legacy.pointer("/structuredContent/nextCursor").expect("fixture has a second page");
+                legacy_args["cursor"] = cursor.clone();
+                generic_args["cursor"] = cursor.clone();
+                let second = call(&mut client, &mut id, generic, generic_args.clone());
+                assert_eq!(second["isError"], false);
+                assert_eq!(second, call(&mut client, &mut id, &alias, legacy_args.clone()));
+                // Cursors remain bound to their original filter, across either name.
+                if generic == "list_symbol_members" {
+                    legacy_args["kinds"] = json!(["method"]);
+                    generic_args["kinds"] = json!(["method"]);
+                } else {
+                    legacy_args["relationshipKinds"] = json!(["directBase"]);
+                    generic_args["relationshipKinds"] = json!(["directBase"]);
+                }
+                let invalid = call(&mut client, &mut id, &alias, legacy_args.clone());
+                assert_eq!(invalid["isError"], true);
+                assert_eq!(invalid, call(&mut client, &mut id, generic, generic_args));
+            }
+            let mut stale = extra.clone();
+            stale["symbolRef"] = with_stale_catalogue_revision(symbol_ref);
+            let old_error = call(&mut client, &mut id, &alias, stale.clone());
+            stale["source"] = json!(source);
+            assert_eq!(old_error["isError"], true);
+            assert_eq!(old_error, call(&mut client, &mut id, generic, stale));
+            let mut unknown = extra;
+            unknown["symbolRef"] = symbol_ref.clone();
+            unknown["unexpected"] = json!(true);
+            let error = call(&mut client, &mut id, &alias, unknown);
+            assert_eq!(error["code"], -32602);
+            assert!(error["message"].as_str().unwrap().starts_with(&format!("Invalid {alias} arguments:")));
+        }
+    }
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
 fn authoring_profile_exposes_one_concise_search_surface() {
     let mut client = McpClient::spawn(&["mcp", "--tool-profile", "authoring"]);
     let initialize = client.initialize(1);

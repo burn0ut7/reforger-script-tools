@@ -22,26 +22,35 @@ test('exercises every listed non-Workbench tool and writes source-free JSON and 
 	const calls = readFileSync(fixture.tracePath, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line));
 
 	assert.equal(report.schemaVersion, 2);
-	assert.equal(report.coverage.listed, 18);
-	assert.equal(report.coverage.exercised, 18);
+	assert.equal(report.coverage.listed, 23);
+	assert.equal(report.coverage.exercised, 23);
 	assert.equal(report.coverage.skipped, 0);
 	assert.equal(report.coverage.failed, 0);
 	assert.equal(report.verdict, 'pass');
-	assert.equal(report.operations.length, 19);
+	assert.equal(report.operations.length, 24);
 	assert.ok(report.operations.some(operation => operation.name === 'current_mixed_source_client_search'));
 	assert.ok(report.operations.every(operation => operation.firstMs >= 0));
 	assert.ok(report.operations.every(operation => operation.warm.count === 2));
 	assert.ok(report.operations.every(operation => operation.responseBytes > 0));
 	assert.ok(report.operations.every(operation => operation.fingerprint));
 	assert.equal(report.coldProcess.count, 1);
+	assert.equal(report.coldProcess.firstNavigation.count, 1);
+	assert.equal(report.coldProcess.firstSourceRead.count, 1);
+	assert.equal(report.coldProcess.missingNavigationHandoffs, 0);
 	assert.deepEqual(report.concurrency.probes.map(probe => probe.requested), [1, 2]);
 	assert.ok(report.concurrency.probes.every(probe => probe.completed === probe.requested));
 	assert.ok(report.operations.flatMap(operation => operation.variants).some(variant => variant.scenario === 'regular-expression'));
 	assert.ok(report.operations.flatMap(operation => operation.variants).some(variant => variant.scenario === 'pagination'));
-	assert.ok(report.operations.find(operation => operation.name === 'read_game_data_source').variants.some(variant => variant.scenario === 'example-handoff'));
+	assert.ok(report.operations.find(operation => operation.name === 'read_game_data_source').variants.some(variant => variant.scenario === 'research-handoff'));
 	assert.ok(report.operations.find(operation => operation.name === 'query_source_symbol_relationships').variants.some(variant => variant.scenario === 'all-level-hierarchy'));
 	assert.ok(report.memory.some(sample => sample.stage === 'after-first-relationship-projection'));
 	assert.equal(report.configuration.buildProfile, 'release');
+	assert.equal(report.configuration.toolProfile, 'all');
+	for (const name of ['inspect_symbol', 'list_symbol_members', 'query_symbol_relationships']) {
+		const operation = report.operations.find(operation => operation.name === name);
+		assert.equal(operation.scenario, 'gameData');
+		assert.ok(operation.variants.some(variant => variant.scenario === 'workspace'));
+	}
 	assert.equal(report.configuration.queries.relationshipMethod, 'OnActivate');
 	assert.equal(report.corpus.workspace.indexedSymbols, 42);
 	assert.deepEqual(
@@ -50,7 +59,7 @@ test('exercises every listed non-Workbench tool and writes source-free JSON and 
 	);
 	assert.ok(Object.values(report.paired.coldGate.phases).every(gate => Number.isFinite(gate.medianBudgetMs) && Number.isFinite(gate.p95BudgetMs)));
 	assert.ok(report.paired.operations.some(operation => operation.name === 'current_mixed_source_client_search'));
-	assert.match(markdown, /18 \/ 18/);
+	assert.match(markdown, /23 \/ 23/);
 	assert.match(markdown, /search_game_data_symbols/);
 	assert.match(markdown, /Concurrency Probe/);
 	assert.doesNotMatch(markdown, /DO_NOT_COPY/);
@@ -223,6 +232,12 @@ function createFakeServer(mode) {
 }
 
 const nonWorkbenchTools = [
+	'search_reforger',
+	'inspect_symbol',
+	'list_symbol_members',
+	'query_symbol_relationships',
+	'research_game_data',
+	'search_game_data_resources',
 	'game_data_status',
 	'search_game_data_symbols',
 	'search_workspace_symbols',
@@ -231,7 +246,6 @@ const nonWorkbenchTools = [
 	'inspect_workspace_symbol',
 	'list_workspace_symbol_members',
 	'query_workspace_symbol_relationships',
-	'search_game_data_examples',
 	'inspect_game_data_symbol',
 	'list_game_data_symbol_members',
 	'query_game_data_symbol_relationships',
@@ -249,6 +263,7 @@ import { createInterface } from 'node:readline';
 
 const mode = process.env.RST_FAKE_MCP_MODE;
 const trace = process.env.RST_FAKE_MCP_TRACE;
+if (process.argv[process.argv.indexOf('--tool-profile') + 1] !== 'all') throw new Error('Expected explicit all tool profile');
 const tools = ${JSON.stringify(nonWorkbenchTools)}.concat('workbench_status');
 let responseSequence = 0;
 const callCounts = new Map();
@@ -276,13 +291,18 @@ function toolResult(name, argumentsValue) {
 	const unavailable = mode === 'unavailable';
 	if (mode === 'cold-error' && name === 'game_data_status') return error('game_data_cold_error');
 	const values = {
+		search_reforger: { results: [], returned: 0 },
+		inspect_symbol: { name: 'Fixture', source: { relativePath: 'Game.c' } },
+		list_symbol_members: { results: [], returned: 0, total: 0 },
+		query_symbol_relationships: { results: [], returned: 0, total: 0 },
+		research_game_data: { status: 'resolved', primary: { readSourceInput: { catalogueRevision: 'gd1:fixture', addonGuid: 'game', relativePath: 'Game.c' } }, alternatives: [], followUp: [] },
+		search_game_data_resources: { results: [], returned: 0, total: 0 },
 		game_data_status: { available: !unavailable, catalogueRevision: 'gd1:fixture', scopeRevision: 'scope1', scopeAuthority: 'workbench-loaded', coverage: { files: 2, indexedSymbols: 84 }, timingsMs: { total: 3 }, addons: [{ addonGuid: 'game', available: true, scriptCount: 2 }] },
 		search_game_data_symbols: { catalogueRevision: 'gd1:fixture', results: unavailable ? [] : [{ symbolRef: 'gd-symbol', readSourceInput: { catalogueRevision: 'gd1:fixture', addonGuid: 'game', relativePath: 'Game.c' } }], returned: unavailable ? 0 : 1, total: unavailable ? 0 : 1 },
 		inspect_game_data_symbol: { name: 'Fixture', members: [], source: { relativePath: 'Game.c' } },
 		list_game_data_symbol_members: { results: [], returned: 0, total: 0 },
 		query_game_data_symbol_relationships: { results: [], returned: 0, total: 0 },
 		read_game_data_source: { content: 'DO_NOT_COPY game source', startLine: 1, endLine: 1 },
-		search_game_data_examples: { results: [{ readSourceInput: { catalogueRevision: 'gd1:fixture', addonGuid: 'game', relativePath: 'Example.c' } }], returned: 1, total: 1 },
 		search_workspace_symbols: { catalogueRevision: 'ws1:fixture', results: unavailable ? [] : [{ symbolRef: 'ws-symbol', readSourceInput: { catalogueRevision: 'ws1:fixture', relativePath: 'Workspace.c' } }], returned: unavailable ? 0 : 1, total: unavailable ? 0 : 1 },
 		inspect_workspace_symbol: { name: 'WorkspaceFixture', members: [], source: { relativePath: 'Workspace.c' } },
 		list_workspace_symbol_members: { results: [], returned: 0, total: 0 },

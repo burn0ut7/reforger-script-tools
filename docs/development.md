@@ -97,21 +97,25 @@ npm run report:mcp-runtime -- --server <server.exe> `
   --require-all
 ```
 
-The runner discovers the live `tools/list` catalogue and excludes every
+The runner explicitly launches the `all` profile, records that profile in its
+controlled inputs, discovers the live `tools/list` catalogue, and excludes every
 `workbench_*` tool. Recognized tools receive configured scenarios; a newly
 listed tool without a scenario is a visible skipped coverage gap. The runner
 follows real search handoffs into inspection, member, relationship, and bounded
-source-read calls for Game Data and workspace code, follows an example result
-into Game Data source, and follows the Official Wiki search-to-read handoff.
+source-read calls for Game Data and workspace code. Generic exact-symbol tools
+exercise both authorities, and compatibility aliases remain explicit coverage.
+It also exercises compact discovery, intent research, resource search, the
+research-to-source handoff, and the Official Wiki search-to-read handoff.
 Text search covers narrow and broad literals, a regular expression, pagination
 when a cursor is returned, and repeated same-process cache behavior. Each tool
 records its first invocation, seven warm samples by default, response size, a
 source-free stable-result fingerprint, result counts, and the applicable
 operation budget.
 
-Three fresh-process samples record process-to-initialize and first Game Data
-status latency; these are process-cold observations, not claims about a cold OS
-filesystem cache. Warm concurrency probes run at 1, 4, and 8 requests against
+Three fresh-process samples record process-to-initialize, first Game Data
+status, and first navigation through search, generic inspection, and source read
+before any full-text scan. These are process-cold observations, not claims about
+a cold OS filesystem cache. Warm concurrency probes run at 1, 4, and 8 requests against
 the first available semantic search surface, matching the server's bounded
 admission ceiling. Change these with `--cold-samples`, `--samples`, and
 `--concurrency-levels`; concurrency levels above eight are rejected. Use the

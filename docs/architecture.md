@@ -203,6 +203,10 @@ it needs the specialist symbol, full-text, resource, and relationship tools.
 It uses the same launch-input builder as the native AI definition, whose
 default remains `authoring`. The compact one-hit discovery interface cannot
 replace the Search UI's filtering and pagination contract.
+Exact-symbol compatibility aliases retain their existing schemas and error
+names but adapt into the same source-selected dispatch as the generic tools.
+Retire those public aliases only after supported callers migrate; paginated
+specialists are not part of that retirement.
 
 The extension contributes the MCP Runtime and packaged Official Wiki Corpus.
 It does not contribute or package Agent Skills. Client-managed skills are

@@ -3209,8 +3209,25 @@ impl ReforgerMcpServer {
             })?;
             return self.search_reforger(input, context).await;
         }
-        if request.name == INSPECT_SYMBOL_TOOL_NAME {
-            let input = parse_workbench_input::<McpSymbolInspectInput>(&request)?;
+        if matches!(
+            request.name.as_ref(),
+            INSPECT_SYMBOL_TOOL_NAME
+                | INSPECT_GAME_DATA_SYMBOL_TOOL_NAME
+                | INSPECT_WORKSPACE_SYMBOL_TOOL_NAME
+        ) {
+            let input = if request.name == INSPECT_SYMBOL_TOOL_NAME {
+                parse_workbench_input::<McpSymbolInspectInput>(&request)?
+            } else {
+                let input = parse_workbench_input::<McpGameDataInspectInput>(&request)?;
+                McpSymbolInspectInput {
+                    source: if request.name == INSPECT_GAME_DATA_SYMBOL_TOOL_NAME {
+                        SourceAuthority::GameData
+                    } else {
+                        SourceAuthority::Workspace
+                    },
+                    symbol_ref: input.symbol_ref,
+                }
+            };
             return match input.source {
                 SourceAuthority::GameData => {
                     self.inspect_game_data_symbol(input.symbol_ref, context)
@@ -3221,8 +3238,28 @@ impl ReforgerMcpServer {
                 }
             };
         }
-        if request.name == LIST_SYMBOL_MEMBERS_TOOL_NAME {
-            let input = parse_workbench_input::<McpSymbolMemberInput>(&request)?;
+        if matches!(
+            request.name.as_ref(),
+            LIST_SYMBOL_MEMBERS_TOOL_NAME
+                | LIST_GAME_DATA_SYMBOL_MEMBERS_TOOL_NAME
+                | LIST_WORKSPACE_SYMBOL_MEMBERS_TOOL_NAME
+        ) {
+            let input = if request.name == LIST_SYMBOL_MEMBERS_TOOL_NAME {
+                parse_workbench_input::<McpSymbolMemberInput>(&request)?
+            } else {
+                let input = parse_workbench_input::<McpGameDataMemberInput>(&request)?;
+                McpSymbolMemberInput {
+                    source: if request.name == LIST_GAME_DATA_SYMBOL_MEMBERS_TOOL_NAME {
+                        SourceAuthority::GameData
+                    } else {
+                        SourceAuthority::Workspace
+                    },
+                    symbol_ref: input.symbol_ref,
+                    kinds: input.kinds,
+                    limit: input.limit,
+                    cursor: input.cursor,
+                }
+            };
             let request = GameDataMemberRequest {
                 symbol_ref: input.symbol_ref,
                 kinds: input.kinds,
@@ -3236,8 +3273,28 @@ impl ReforgerMcpServer {
                 SourceAuthority::Workspace => self.workspace_members(request, context).await,
             };
         }
-        if request.name == QUERY_SYMBOL_RELATIONSHIPS_TOOL_NAME {
-            let input = parse_workbench_input::<McpSymbolRelationshipInput>(&request)?;
+        if matches!(
+            request.name.as_ref(),
+            QUERY_SYMBOL_RELATIONSHIPS_TOOL_NAME
+                | QUERY_GAME_DATA_SYMBOL_RELATIONSHIPS_TOOL_NAME
+                | QUERY_WORKSPACE_SYMBOL_RELATIONSHIPS_TOOL_NAME
+        ) {
+            let input = if request.name == QUERY_SYMBOL_RELATIONSHIPS_TOOL_NAME {
+                parse_workbench_input::<McpSymbolRelationshipInput>(&request)?
+            } else {
+                let input = parse_workbench_input::<McpGameDataRelationshipInput>(&request)?;
+                McpSymbolRelationshipInput {
+                    source: if request.name == QUERY_GAME_DATA_SYMBOL_RELATIONSHIPS_TOOL_NAME {
+                        SourceAuthority::GameData
+                    } else {
+                        SourceAuthority::Workspace
+                    },
+                    symbol_ref: input.symbol_ref,
+                    relationship_kinds: input.relationship_kinds,
+                    limit: input.limit,
+                    cursor: input.cursor,
+                }
+            };
             let request = GameDataRelationshipRequest {
                 symbol_ref: input.symbol_ref,
                 relationship_kinds: Some(input.relationship_kinds),
@@ -3305,24 +3362,6 @@ impl ReforgerMcpServer {
                 )
                 .await;
         }
-        if request.name == INSPECT_WORKSPACE_SYMBOL_TOOL_NAME {
-            let input = parse_workbench_input::<McpGameDataInspectInput>(&request)?;
-            return self.workspace_inspect(input.symbol_ref, context).await;
-        }
-        if request.name == LIST_WORKSPACE_SYMBOL_MEMBERS_TOOL_NAME {
-            let input = parse_workbench_input::<McpGameDataMemberInput>(&request)?;
-            return self
-                .workspace_members(
-                    GameDataMemberRequest {
-                        symbol_ref: input.symbol_ref,
-                        kinds: input.kinds,
-                        limit: input.limit,
-                        cursor: input.cursor,
-                    },
-                    context,
-                )
-                .await;
-        }
         if request.name == READ_WORKSPACE_SOURCE_TOOL_NAME {
             let input = serde_json::from_value::<McpWorkspaceSourceInput>(Value::Object(
                 request.arguments.unwrap_or_default(),
@@ -3341,20 +3380,6 @@ impl ReforgerMcpServer {
                         relative_path: input.relative_path,
                         start_line: input.start_line,
                         line_count: input.line_count,
-                    },
-                    context,
-                )
-                .await;
-        }
-        if request.name == QUERY_WORKSPACE_SYMBOL_RELATIONSHIPS_TOOL_NAME {
-            let input = parse_workbench_input::<McpGameDataRelationshipInput>(&request)?;
-            return self
-                .workspace_relationships(
-                    GameDataRelationshipRequest {
-                        symbol_ref: input.symbol_ref,
-                        relationship_kinds: Some(input.relationship_kinds),
-                        limit: input.limit,
-                        cursor: input.cursor,
                     },
                     context,
                 )
@@ -4799,82 +4824,6 @@ impl ReforgerMcpServer {
                 )
                 .await;
         }
-        if request.name == LIST_GAME_DATA_SYMBOL_MEMBERS_TOOL_NAME {
-            if request.task.is_some() {
-                return Err(McpError::invalid_params(
-                    "list_game_data_symbol_members does not support task execution",
-                    None,
-                ));
-            }
-            let input = serde_json::from_value::<McpGameDataMemberInput>(Value::Object(
-                request.arguments.unwrap_or_default(),
-            ))
-            .map_err(|error| {
-                McpError::invalid_params(
-                    format!("Invalid list_game_data_symbol_members arguments: {error}"),
-                    None,
-                )
-            })?;
-            return self
-                .list_game_data_symbol_members(
-                    GameDataMemberRequest {
-                        symbol_ref: input.symbol_ref,
-                        kinds: input.kinds,
-                        limit: input.limit,
-                        cursor: input.cursor,
-                    },
-                    context,
-                )
-                .await;
-        }
-        if request.name == QUERY_GAME_DATA_SYMBOL_RELATIONSHIPS_TOOL_NAME {
-            if request.task.is_some() {
-                return Err(McpError::invalid_params(
-                    "query_game_data_symbol_relationships does not support task execution",
-                    None,
-                ));
-            }
-            let input = serde_json::from_value::<McpGameDataRelationshipInput>(Value::Object(
-                request.arguments.unwrap_or_default(),
-            ))
-            .map_err(|error| {
-                McpError::invalid_params(
-                    format!("Invalid query_game_data_symbol_relationships arguments: {error}"),
-                    None,
-                )
-            })?;
-            return self
-                .query_game_data_symbol_relationships(
-                    GameDataRelationshipRequest {
-                        symbol_ref: input.symbol_ref,
-                        relationship_kinds: Some(input.relationship_kinds),
-                        limit: input.limit,
-                        cursor: input.cursor,
-                    },
-                    context,
-                )
-                .await;
-        }
-        if request.name == INSPECT_GAME_DATA_SYMBOL_TOOL_NAME {
-            if request.task.is_some() {
-                return Err(McpError::invalid_params(
-                    "inspect_game_data_symbol does not support task execution",
-                    None,
-                ));
-            }
-            let input = serde_json::from_value::<McpGameDataInspectInput>(Value::Object(
-                request.arguments.unwrap_or_default(),
-            ))
-            .map_err(|error| {
-                McpError::invalid_params(
-                    format!("Invalid inspect_game_data_symbol arguments: {error}"),
-                    None,
-                )
-            })?;
-            return self
-                .inspect_game_data_symbol(input.symbol_ref, context)
-                .await;
-        }
         if request.name == READ_GAME_DATA_SOURCE_TOOL_NAME {
             if request.task.is_some() {
                 return Err(McpError::invalid_params(
@@ -5949,7 +5898,7 @@ When `isError` is true, inspect the structured stable error and follow its `reco
 ## Tool profiles\n\n\
 The default `authoring` profile exposes the compact search, exact evidence handoffs, and common Workbench lifecycle tools. \
 Use `--tool-profile workbench-inspect`, `workbench-edit`, or `admin` to add the corresponding capability family. \
-Use `--tool-profile all` for compatibility and complete contract inspection; legacy authority-specific search and symbol tools remain there during migration and may be removed after clients use `search_reforger` and the generic symbol handoffs. \
+Use `--tool-profile all` for compatibility and complete contract inspection; paginated authority-specific search tools remain supported specialists. Exact-symbol aliases share the generic dispatch and may be retired only after supported callers migrate to the generic symbol handoffs; one-hit `search_reforger` does not replace paginated search. \
 The profile is fixed when the MCP process starts. The VS Code extension starts `authoring`; external clients select another profile with the launch argument.\n\n\
 ## Expected tool failures\n\n\
 When a valid tool request cannot complete, every tool family returns a structured error with `ok: false`, stable `code`, caller-facing `message`, actionable `recovery`, and `retryable`. Workbench failures additionally include `phase` and a sanitized `logReference`. Invalid arguments and unknown tool names remain MCP protocol errors.\n\n"

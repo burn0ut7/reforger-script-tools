@@ -91,6 +91,7 @@ async function runReport(configuration) {
 		scope: 'non-workbench',
 		server: resolve(configuration.server),
 		configuration: {
+			toolProfile: 'all',
 			commit: configuration.commit,
 			buildProfile: configuration.buildProfile,
 			acceptProjectionMemory: configuration.acceptProjectionMemory,
@@ -122,7 +123,6 @@ async function runReport(configuration) {
 				broadText: configuration.broadTextQuery,
 				regex: configuration.regexQuery,
 				wiki: configuration.wikiQuery,
-				exampleTopic: configuration.exampleTopic,
 				relationshipMethod: configuration.relationshipMethodQuery,
 			},
 		},
@@ -520,7 +520,7 @@ async function runScenarios(runner) {
 		})) : [],
 	} : undefined;
 	let gameSearch;
-	let gameExamples;
+	let gameResearch;
 	if (gameAvailable) {
 		gameSearch = await runner.exercise('search_game_data_symbols', {
 			query: runner.configuration.gameSymbolQuery,
@@ -531,19 +531,23 @@ async function runScenarios(runner) {
 			limit: 20,
 		});
 		await runTextVariants(runner, 'search_game_data_text', gameText);
-		gameExamples = await runner.exercise('search_game_data_examples', {
-			topic: runner.configuration.exampleTopic,
-			limit: 20,
-		}, { unavailableCodes: ['source_evidence_unavailable'] });
+		gameResearch = await runner.exercise('research_game_data', { query: runner.configuration.gameSymbolQuery }, {
+			unavailableCodes: ['source_evidence_unavailable'],
+		});
 	} else {
 		runner.skipMany([
 			'search_game_data_symbols',
 			'search_game_data_text',
-			'search_game_data_examples',
+			'research_game_data',
 		], 'Game Data status reports that the catalogue is unavailable.');
 	}
+	await runner.exercise('search_game_data_resources', { query: runner.configuration.gameSymbolQuery, limit: 20 }, {
+		unavailableCodes: ['resource_catalogue_unavailable', 'game_data_unavailable'],
+	});
+	await runner.exercise('search_reforger', { query: runner.configuration.gameSymbolQuery });
 	const gameResult = firstResult(gameSearch);
 	if (gameResult?.symbolRef) {
+		await runGenericSymbolScenarios(runner, 'gameData', gameResult.symbolRef);
 		await runner.exercise('inspect_game_data_symbol', { symbolRef: gameResult.symbolRef });
 		await runner.exercise('list_game_data_symbol_members', { symbolRef: gameResult.symbolRef, limit: 20 });
 		await runner.exercise('query_game_data_symbol_relationships', {
@@ -560,10 +564,10 @@ async function runScenarios(runner) {
 	}
 	if (gameResult?.readSourceInput) {
 		await runner.exercise('read_game_data_source', gameResult.readSourceInput);
-		const exampleReadInput = firstResult(gameExamples)?.readSourceInput;
-		if (exampleReadInput) await runner.variant('read_game_data_source', exampleReadInput, 'example-handoff');
-	} else if (firstResult(gameExamples)?.readSourceInput) {
-		await runner.exercise('read_game_data_source', firstResult(gameExamples).readSourceInput);
+		const researchReadInput = gameResearch?.primary?.readSourceInput;
+		if (researchReadInput) await runner.variant('read_game_data_source', researchReadInput, 'research-handoff');
+	} else if (gameResearch?.primary?.readSourceInput) {
+		await runner.exercise('read_game_data_source', gameResearch.primary.readSourceInput);
 	} else {
 		runner.skip('read_game_data_source', gameAvailable ? 'The configured Game Data symbol query returned no source-read handoff.' : 'Game Data is unavailable.');
 	}
@@ -593,6 +597,7 @@ async function runScenarios(runner) {
 		);
 	}
 	if (workspaceResult?.symbolRef) {
+		await runGenericSymbolScenarios(runner, 'workspace', workspaceResult.symbolRef);
 		await runner.exercise('inspect_workspace_symbol', { symbolRef: workspaceResult.symbolRef });
 		await runner.exercise('list_workspace_symbol_members', { symbolRef: workspaceResult.symbolRef, limit: 20 });
 		await runner.exercise('query_workspace_symbol_relationships', {
@@ -611,6 +616,9 @@ async function runScenarios(runner) {
 		await runner.exercise('read_workspace_source', workspaceResult.readSourceInput);
 	} else {
 		runner.skip('read_workspace_source', workspaceAvailable ? 'The configured workspace symbol query returned no source-read handoff.' : 'Workspace source is unavailable.');
+	}
+	if (!gameResult?.symbolRef && !workspaceResult?.symbolRef) {
+		runner.skipMany(['inspect_symbol', 'list_symbol_members', 'query_symbol_relationships'], 'No exact symbol handoff is available.');
 	}
 
 	const relationshipAnchor = gameResult?.symbolRef
@@ -728,6 +736,22 @@ async function runScenarios(runner) {
 	}
 }
 
+async function runGenericSymbolScenarios(runner, source, symbolRef) {
+	const scenarios = [
+		['inspect_symbol', { source, symbolRef }],
+		['list_symbol_members', { source, symbolRef, limit: 20 }],
+		['query_symbol_relationships', { source, symbolRef, relationshipKinds: ['reference'], limit: 20 }],
+	];
+	for (const [name, argumentsValue] of scenarios) {
+		const operation = runner.operations.find(candidate => candidate.name === name);
+		if (operation) {
+			await runner.variant(name, argumentsValue, source);
+		} else {
+			await runner.exercise(name, argumentsValue, { scenario: source });
+		}
+	}
+}
+
 async function runTextVariants(runner, name, firstPage) {
 	await runner.variant(name, {
 		query: runner.configuration.broadTextQuery,
@@ -750,6 +774,9 @@ async function runTextVariants(runner, name, firstPage) {
 async function measureColdProcesses(configuration) {
 	const initializeSamples = [];
 	const statusSamples = [];
+	const navigationSamples = [];
+	const sourceReadSamples = [];
+	let missingNavigationHandoffs = 0;
 	let availableCount = 0;
 	let failed = 0;
 	for (let iteration = 0; iteration < configuration.coldSamples; iteration += 1) {
@@ -764,7 +791,26 @@ async function measureColdProcesses(configuration) {
 					failed += 1;
 				} else {
 					statusSamples.push(status.elapsedMs);
-					if (status.value?.structuredContent?.available === true) availableCount += 1;
+					if (status.value?.structuredContent?.available === true) {
+						availableCount += 1;
+						const started = performance.now();
+						const search = await client.callTool('search_game_data_symbols', { query: configuration.gameSymbolQuery, limit: 20 });
+						const hit = firstResult(search?.structuredContent);
+						if (search?.isError === true) {
+							failed += 1;
+						} else if (hit?.symbolRef && hit?.readSourceInput) {
+							const inspection = await client.callTool('inspect_symbol', { source: 'gameData', symbolRef: hit.symbolRef });
+							const read = await measure(() => client.callTool('read_game_data_source', hit.readSourceInput));
+							if (inspection?.isError === true || read.value?.isError === true) {
+								failed += 1;
+							} else {
+								navigationSamples.push(performance.now() - started);
+								sourceReadSamples.push(read.elapsedMs);
+							}
+						} else {
+							missingNavigationHandoffs += 1;
+						}
+					}
 				}
 			}
 		} catch {
@@ -778,6 +824,9 @@ async function measureColdProcesses(configuration) {
 		processToInitialize: distribution(initializeSamples),
 		gameDataStatus: distribution(statusSamples),
 		gameDataAvailable: availableCount,
+		firstNavigation: distribution(navigationSamples),
+		firstSourceRead: distribution(sourceReadSamples),
+		missingNavigationHandoffs,
 		failed,
 	};
 }
@@ -935,7 +984,6 @@ function parseArguments(args) {
 		broadTextQuery: 'class',
 		regexQuery: '\\bclass\\s+[A-Za-z_][A-Za-z0-9_]*',
 		wikiQuery: 'replication',
-		exampleTopic: 'replication',
 		relationshipMethodQuery: 'OnActivate',
 		commit: currentCommit(),
 		requireAll: false,
@@ -973,7 +1021,6 @@ function parseArguments(args) {
 			case '--broad-text-query': parsed.broadTextQuery = value(); break;
 			case '--regex-query': parsed.regexQuery = value(); break;
 			case '--wiki-query': parsed.wikiQuery = value(); break;
-			case '--example-topic': parsed.exampleTopic = value(); break;
 			case '--relationship-method-query': parsed.relationshipMethodQuery = value(); break;
 			case '--commit': parsed.commit = value(); break;
 			case '--baseline-report': parsed.baselineReport = value(); break;
@@ -1020,7 +1067,7 @@ function parseWorkspaceIndexInventory(path) {
 }
 
 function serverArguments(configuration) {
-	const args = [...configuration.serverPrefixArgs, 'mcp'];
+	const args = [...configuration.serverPrefixArgs, 'mcp', '--tool-profile', 'all'];
 	if (configuration.addonSourceInventory) args.push('--addon-source-inventory', resolve(configuration.addonSourceInventory));
 	if (configuration.addonIndexStorage) args.push('--addon-index-storage', resolve(configuration.addonIndexStorage));
 	args.push('--external-index-mode', configuration.externalIndexMode);
@@ -1200,6 +1247,7 @@ function renderMarkdown(report) {
 		'',
 		`- Host: ${report.host.hostname}; ${report.host.platform} ${report.host.release}; ${report.host.architecture}; ${report.host.logicalCpuCount} logical CPUs; ${report.host.totalMemoryBytes} bytes RAM`,
 		`- Build profile: ${report.configuration.buildProfile}`,
+		`- Tool profile: ${report.configuration.toolProfile}`,
 		`- Samples: ${report.configuration.samples} warm; ${report.configuration.coldSamples} cold; concurrency ${report.configuration.concurrencyLevels.join('/')}; timeout ${report.configuration.timeoutMs} ms`,
 		`- Workspace roots: ${report.configuration.workspaceRoots.join(', ') || 'None'}`,
 		`- Game Data revision: ${report.corpus.gameData?.catalogueRevision ?? 'Unavailable'}`,
@@ -1255,6 +1303,9 @@ function renderMarkdown(report) {
 		`- Processes: ${report.coldProcess.count}`,
 		`- Start-to-initialize median / p95: ${formatMs(report.coldProcess.processToInitialize.medianMs)} / ${formatMs(report.coldProcess.processToInitialize.p95Ms)}`,
 		`- First Game Data status median / p95: ${formatMs(report.coldProcess.gameDataStatus.medianMs)} / ${formatMs(report.coldProcess.gameDataStatus.p95Ms)}`,
+		`- First navigation (search, inspect, source read) median / p95: ${formatMs(report.coldProcess.firstNavigation.medianMs)} / ${formatMs(report.coldProcess.firstNavigation.p95Ms)}`,
+		`- First source read median / p95: ${formatMs(report.coldProcess.firstSourceRead.medianMs)} / ${formatMs(report.coldProcess.firstSourceRead.p95Ms)}`,
+		`- Missing navigation handoffs: ${report.coldProcess.missingNavigationHandoffs}`,
 		`- Game Data available: ${report.coldProcess.gameDataAvailable} / ${report.coldProcess.count}`,
 		`- Failed samples: ${report.coldProcess.failed}`,
 		'',
@@ -1343,6 +1394,7 @@ function controlledInputs(report) {
 	return {
 		host: report.host,
 		buildProfile: configuration.buildProfile,
+		toolProfile: configuration.toolProfile,
 		sampling: {
 			samples: configuration.samples,
 			coldSamples: configuration.coldSamples,
@@ -1586,7 +1638,7 @@ function usage(error) {
 		'  Sampling: --samples <n> --cold-samples <n> --concurrency-levels <1,4,8> --timeout-ms <ms>\n' +
 		'  Gates: --require-all --enforce-budgets --accept-projection-memory\n' +
 		'  Queries: --game-symbol-query <text> --workspace-symbol-query <text> --text-query <text> --broad-text-query <text>\n' +
-		'           --regex-query <pattern> --wiki-query <text> --example-topic <text> --relationship-method-query <text>\n' +
+		'           --regex-query <pattern> --wiki-query <text> --relationship-method-query <text>\n' +
 		'  Identity: --commit <sha>\n' +
 		'  Output: --json-out <path> --markdown-out <path>\n' +
 		'          --baseline-report <json> --paired-baseline-server <executable>\n' +

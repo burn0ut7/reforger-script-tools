@@ -25,7 +25,7 @@ Search indexed Reforger knowledge and inspect or operate the configured live Wor
 
 ## Tool profiles
 
-The default `authoring` profile exposes the compact search, exact evidence handoffs, and common Workbench lifecycle tools. Use `--tool-profile workbench-inspect`, `workbench-edit`, or `admin` to add the corresponding capability family. Use `--tool-profile all` for compatibility and complete contract inspection; legacy authority-specific search and symbol tools remain there during migration and may be removed after clients use `search_reforger` and the generic symbol handoffs. The profile is fixed when the MCP process starts. The VS Code extension starts `authoring`; external clients select another profile with the launch argument.
+The default `authoring` profile exposes the compact search, exact evidence handoffs, and common Workbench lifecycle tools. Use `--tool-profile workbench-inspect`, `workbench-edit`, or `admin` to add the corresponding capability family. Use `--tool-profile all` for compatibility and complete contract inspection; paginated authority-specific search tools remain supported specialists. Exact-symbol aliases share the generic dispatch and may be retired only after supported callers migrate to the generic symbol handoffs; one-hit `search_reforger` does not replace paginated search. The profile is fixed when the MCP process starts. The VS Code extension starts `authoring`; external clients select another profile with the launch argument.
 
 ## Expected tool failures
 
