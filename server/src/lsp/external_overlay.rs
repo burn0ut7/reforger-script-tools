@@ -1838,6 +1838,8 @@ mod tests {
             "workspace facts remain independently available"
         );
 
+        // Release the state lock before the refresh tries to acquire it again.
+        let graph_generation = handle.state.lock().unwrap().graph_generation;
         run_external_index_thread(
             handle.state.clone(),
             Some(missing_inventory),
@@ -1845,7 +1847,7 @@ mod tests {
             ExternalIndexMode::Loaded,
             vec![workspace],
             Vec::new(),
-            handle.state.lock().unwrap().graph_generation,
+            graph_generation,
             LspLogger::new(None, None),
             None,
             handle.control.clone(),

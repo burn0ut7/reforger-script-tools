@@ -10,6 +10,14 @@ For a fresh checkout, install a current Node.js LTS release and the Rust toolcha
 (including Cargo), then run `npm ci` from the repository root. Rust is a
 development requirement only; packaged extension users receive the built server.
 
+On Windows, Rust's MSVC target also requires Microsoft's C++ build tools and a
+Windows SDK. In Visual Studio Installer, modify the existing installation and
+select **Desktop development with C++**, including the MSVC x64/x86 build tools
+and a Windows SDK. Reopen the terminal after installation. See
+[Microsoft's Rust setup guide](https://learn.microsoft.com/en-us/windows/dev-environment/rust/setup).
+A missing `link.exe` blocks executable builds and test execution even when
+`cargo check` succeeds.
+
 From the repository root:
 
 | Command | Verifies |

@@ -380,7 +380,7 @@ or runtime acceptance is claimed.
   MCP discovery, and the absence of packaged Agent Skills. All eight links in
   the documentation index resolve, and active code/build/docs have no remaining
   references to the deleted validator interface.
-- Blocked: `npm run compile` and `npm run test:server` at the missing Microsoft
+- Initially blocked: `npm run compile` and `npm run test:server` at the missing Microsoft
   `link.exe`. The current Rust changes were statically checked, including test
   targets, but their tests could not execute. VS Code real-process acceptance
   used the pre-existing packaged Rust binary; it does not validate the changed
@@ -391,8 +391,48 @@ or runtime acceptance is claimed.
   was removed in favor of the new real-process acceptance, and the final run
   had 73 passes with no failures.
 - No end-to-end performance improvement is claimed from operation-count
-  reduction alone. Run the added Rust regressions and full server suite with
-  the C++ build toolchain available before release.
+  reduction alone. Executable validation after installing the C++ toolchain is
+  recorded in the follow-up below.
+
+### Toolchain follow-up, 2026-09-18
+
+Installing the MSVC x64/x86 tools and Windows SDK resolved the missing-linker
+failure. The development build now links successfully, and the generated MCP
+reference and all 91 tool contracts match the server.
+
+Running the Rust suite exposed a test-only self-deadlock in
+`failed_workbench_graph_refresh_clears_prior_game_data_without_hiding_workspace_facts`.
+Its refresh call received `graph_generation` through a temporary mutex guard
+that survived until the call returned; the refresh then tried to lock the same
+state. Read the generation in a separate statement so the guard drops before
+the call. This change is confined to `#[cfg(test)]`.
+
+After the fix, `npm run compile` passed again, the focused regression passed in
+0.02 seconds, and `npm run test:server` passed all 1,051 tests with no failures
+or ignored tests. Final logs are `.cache/reports/toolchain-compile-final.log`,
+`.cache/reports/toolchain-rust-focused.log`, and
+`.cache/reports/toolchain-server-tests-final.log`.
+
+The full VS Code workspace suite passed 209 tests against the freshly built
+server. The separate no-workspace native MCP acceptance test failed under
+VS Code 1.138.0: `workbench.mcp.listServer` did not activate the contributed
+provider within the test's five-second wait. The cause is unresolved; provider
+registration and direct MCP-process tests do not substitute for this activation
+check. Investigate the clean-window activation path before declaring the full
+extension gate green.
+The run used `npm test --ignore-scripts` after separately completing its
+pretest steps, avoiding a duplicate development build. Its log is
+`.cache/reports/toolchain-extension-tests.log`.
+
+Production packaging and `npm run test:packaged-official-wiki` passed. The
+VSIX allowlist contains 319 files (excluding the container content-types entry),
+and the installed runtime verified 311 byte-identical Wiki files, its 20-tool
+authoring profile, and independent workspace/Wiki search, inspection, and read
+workflows. This closes the original fresh-binary VSIX coverage gap. See
+`.cache/reports/toolchain-package-tests.log`.
+
+Live Workbench status remained unavailable, support reference
+`wb-82840-1789744536236-4`; no live editor acceptance is claimed.
 
 ## Top recommendation
 
