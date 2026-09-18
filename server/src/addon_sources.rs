@@ -1444,24 +1444,27 @@ pub fn read_cached_dependency_addon_sources(
 ) -> Result<Vec<LoadedAddonSourceInfo>, String> {
     let dependency_guids =
         read_project_dependency_scope_guids(project_files, storage_root, control)?;
-    let mut manifests = cached_manifest_descriptors(storage_root, control)?
+    cached_scope_descriptors(storage_root, &[], control, false, Some(&dependency_guids))?
         .into_iter()
-        .map(|(manifest, _)| manifest)
-        .filter(|manifest| dependency_guids.contains(&manifest.guid.to_ascii_uppercase()))
+        .map(|(manifest, _)| cached_manifest_source_info(&manifest))
+        .collect()
+}
+
+/// The same cached instance selection used by `all` semantic search, without
+/// decoding semantic indexes. Missing source roots remain exact cached facts;
+/// resource readers decide whether a matching resource snapshot is available.
+pub fn read_all_cached_addon_sources(
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+) -> Result<Vec<LoadedAddonSourceInfo>, String> {
+    let workspace_roots = workspace_roots
+        .iter()
+        .filter_map(|root| fs::canonicalize(root).ok())
         .collect::<Vec<_>>();
-    manifests.sort_by(|left, right| {
-        left.guid
-            .cmp(&right.guid)
-            .then_with(|| {
-                dependency_source_preference(&left.source_root)
-                    .cmp(&dependency_source_preference(&right.source_root))
-            })
-            .then_with(|| left.source_root.cmp(&right.source_root))
-    });
-    manifests.dedup_by(|left, right| left.guid.eq_ignore_ascii_case(&right.guid));
-    manifests
+    cached_scope_descriptors(storage_root, &workspace_roots, control, false, None)?
         .into_iter()
-        .map(|manifest| cached_manifest_source_info(&manifest))
+        .map(|(manifest, _)| cached_manifest_source_info(&manifest))
         .collect()
 }
 
@@ -1495,12 +1498,7 @@ fn cached_manifest_source_info(
         guid: manifest.guid.to_ascii_uppercase(),
         display_id,
         title,
-        source_root: fs::canonicalize(&manifest.source_root).map_err(|error| {
-            format!(
-                "Failed to resolve cached add-on source {}: {error}",
-                manifest.source_root.display()
-            )
-        })?,
+        source_root: manifest.source_root.clone(),
     })
 }
 
@@ -1674,27 +1672,16 @@ fn refresh_cache_catalogue(storage_root: &Path) -> Result<(), String> {
     )
 }
 
-fn load_cached_indexes_from_storage(
+/// Chooses cached identities once for semantic and metadata-only projections.
+/// Workspace exclusions and dependency preference happen before either reader
+/// decides whether its own payload is available.
+fn cached_scope_descriptors(
     storage_root: &Path,
     workspace_roots: &[PathBuf],
     control: &IndexBuildControl,
     base_game_only: bool,
     dependency_guids: Option<&BTreeSet<String>>,
-) -> Result<LoadedAddonIndexResult, String> {
-    let total_start = Instant::now();
-    let graph_start = Instant::now();
-    let workspace_roots = workspace_roots
-        .iter()
-        .filter_map(|root| fs::canonicalize(root).ok())
-        .collect::<Vec<_>>();
-    let workspace_root_resolution = graph_start.elapsed();
-    if !storage_root.is_dir() {
-        return Ok(empty_cached_index_result(
-            total_start.elapsed(),
-            workspace_root_resolution,
-            dependency_guids.is_some(),
-        ));
-    }
+) -> Result<Vec<(AddonIndexManifestHeader, PathBuf)>, String> {
     let mut descriptors = Vec::new();
     for (manifest, cache_path) in cached_manifest_descriptors(storage_root, control)? {
         control.check()?;
@@ -1730,6 +1717,37 @@ fn load_cached_indexes_from_storage(
             &right.display_id,
         ))
     });
+    Ok(descriptors)
+}
+
+fn load_cached_indexes_from_storage(
+    storage_root: &Path,
+    workspace_roots: &[PathBuf],
+    control: &IndexBuildControl,
+    base_game_only: bool,
+    dependency_guids: Option<&BTreeSet<String>>,
+) -> Result<LoadedAddonIndexResult, String> {
+    let total_start = Instant::now();
+    let graph_start = Instant::now();
+    let workspace_roots = workspace_roots
+        .iter()
+        .filter_map(|root| fs::canonicalize(root).ok())
+        .collect::<Vec<_>>();
+    let workspace_root_resolution = graph_start.elapsed();
+    if !storage_root.is_dir() {
+        return Ok(empty_cached_index_result(
+            total_start.elapsed(),
+            workspace_root_resolution,
+            dependency_guids.is_some(),
+        ));
+    }
+    let descriptors = cached_scope_descriptors(
+        storage_root,
+        &workspace_roots,
+        control,
+        base_game_only,
+        dependency_guids,
+    )?;
 
     let cache_load_start = Instant::now();
     let descriptors = descriptors
@@ -3138,60 +3156,6 @@ pub fn read_loaded_addon_sources(
             source_root: addon.source_root,
         })
         .collect())
-}
-
-/// Reads the last Workbench graph even when one of its source roots is no
-/// longer present. Resource metadata may still be served from its exact
-/// per-instance cache; callers must label that provenance as stale.
-pub fn read_loaded_addon_sources_allow_stale(
-    inventory_path: &Path,
-) -> Result<Vec<LoadedAddonSourceInfo>, String> {
-    let raw = fs::read_to_string(inventory_path).map_err(|error| {
-        format!(
-            "Failed to read add-on source inventory {}: {error}",
-            inventory_path.display()
-        )
-    })?;
-    let graph: WorkbenchLoadedAddonGraphInventory =
-        serde_json::from_str(&raw).map_err(|error| {
-            format!(
-                "Invalid Workbench loaded add-on graph {}: {error}",
-                inventory_path.display()
-            )
-        })?;
-    if graph.schema != "reforger-workbench-loaded-addon-graph-v1"
-        || graph.protocol_version != 1
-        || graph.bridge_version.is_empty()
-        || graph.addons.is_empty()
-    {
-        return Err("Unsupported Workbench loaded add-on graph schema or protocol".to_string());
-    }
-    let mut instances = BTreeSet::new();
-    graph
-        .addons
-        .into_iter()
-        .map(|addon| {
-            let guid = addon.guid.to_ascii_uppercase();
-            if guid.len() != 16
-                || !guid.bytes().all(|byte| byte.is_ascii_hexdigit())
-                || addon.id.is_empty()
-                || addon.title.is_empty()
-                || !addon.source_root.is_absolute()
-                || !instances.insert((guid.clone(), addon.source_root.clone()))
-            {
-                return Err(
-                    "Workbench loaded add-on graph contains an invalid or duplicate instance"
-                        .to_string(),
-                );
-            }
-            Ok(LoadedAddonSourceInfo {
-                guid,
-                display_id: addon.id,
-                title: addon.title,
-                source_root: addon.source_root,
-            })
-        })
-        .collect()
 }
 
 fn modified_unix_ms(metadata: &fs::Metadata) -> u128 {

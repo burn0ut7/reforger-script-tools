@@ -270,7 +270,17 @@ relationship state; changed catalogue scope clears cached pages so a stale
 anchor is rejected rather than mixed with a newer generation.
 The Search page's resource mode is separate from those indexed-source modes:
 it queries Rust's offline, metadata-only Game Data Resource Catalogue for the
-exact loaded add-on scope. Packed PAC file tables and bounded loose-root
+configured external scope. Cached `all` and provisional dependency selection
+share the semantic loader's instance filtering, ordering, and duplicate-GUID
+preference. `all` does not require or fall back to a Workbench inventory.
+Semantic and resource payload availability remain independent: a corrupt
+semantic cache does not hide readable resources. A missing source root can
+serve only an exact per-instance resource cache, with every result explicitly
+marked stale. Resource search also retains current workspace loose resources
+when the current Workbench graph identifies their add-on; those instances are
+excluded from external symbol caches. An unavailable graph cannot supply that
+workspace identity or replace the cached external scope.
+Packed PAC file tables and bounded loose-root
 enumeration contribute only logical paths, extensions, classification,
 provenance, and registration state; no payload is read or extracted. Results
 carry an opaque catalogue revision and complete Workbench link, so the UI does

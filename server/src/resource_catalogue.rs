@@ -1,9 +1,8 @@
 //! Offline, metadata-only resource discovery for the loaded Game Data scope.
 
 use crate::addon_sources::{
-    loaded_addon_archive_paths, read_cached_combined_addon_sources,
+    loaded_addon_archive_paths, read_all_cached_addon_sources, read_cached_combined_addon_sources,
     read_cached_dependency_addon_sources, read_loaded_addon_sources,
-    read_loaded_addon_sources_allow_stale,
 };
 use crate::addon_thumbnail_color::addon_thumbnail_color;
 use crate::game_data_catalogue::GameDataExternalIndexMode;
@@ -301,6 +300,18 @@ impl ResourceCatalogue {
         selected_addon_guids: &[String],
     ) -> Result<(Self, ResourceCatalogueStats), String> {
         let started = Instant::now();
+        let workspace_roots = config
+            .workspace_roots
+            .iter()
+            .map(|root| {
+                fs::canonicalize(root).map_err(|error| {
+                    format!(
+                        "Failed to resolve configured workspace root {}: {error}",
+                        root.display()
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let mut addons = match config.external_index_mode {
             GameDataExternalIndexMode::None => {
                 return Err("External Game Data indexing is disabled.".to_string())
@@ -331,13 +342,22 @@ impl ResourceCatalogue {
                 read_loaded_addon_sources(inventory)?
             }
             GameDataExternalIndexMode::All => {
-                let inventory = config.addon_source_inventory.as_ref().ok_or_else(|| {
-                    "The Workbench loaded add-on inventory is not configured.".to_string()
+                let storage = config.addon_index_storage.as_ref().ok_or_else(|| {
+                    "The parser-owned add-on index storage is not configured.".to_string()
                 })?;
-                match read_loaded_addon_sources(inventory) {
-                    Ok(addons) => addons,
-                    Err(_) => read_loaded_addon_sources_allow_stale(inventory)?,
+                let mut sources =
+                    read_all_cached_addon_sources(storage, &workspace_roots, control)?;
+                // Workspace resources are live loose files, not external cache
+                // instances. Keep that projection when the current graph proves
+                // its identity; an unavailable graph cannot substitute a scope.
+                if let Some(inventory) = config.addon_source_inventory.as_ref() {
+                    if let Ok(loaded) = read_loaded_addon_sources(inventory) {
+                        sources.extend(loaded.into_iter().filter(|addon| {
+                            workspace_addon_for(&workspace_roots, &addon.source_root)
+                        }));
+                    }
                 }
+                sources
             }
         };
         if !selected_addon_guids.is_empty() {
@@ -351,18 +371,6 @@ impl ResourceCatalogue {
         let mut packed = 0;
         let mut loose = 0;
         let mut revision_hasher = Sha256::new();
-        let workspace_roots = config
-            .workspace_roots
-            .iter()
-            .map(|root| {
-                fs::canonicalize(root).map_err(|error| {
-                    format!(
-                        "Failed to resolve configured workspace root {}: {error}",
-                        root.display()
-                    )
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
         for addon in &addons {
             control
                 .check()
@@ -1236,6 +1244,118 @@ mod tests {
             .iter()
             .any(|record| record.addon_guid == "1111111111111111"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn all_mode_shares_cached_scope_and_preserves_live_and_stale_resource_provenance() {
+        use crate::addon_sources::load_all_cached_addon_indexes;
+        let root = std::env::temp_dir().join(format!(
+            "rst-resource-all-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first = root.join("first");
+        let second = root.join("second");
+        for source in [&first, &second] {
+            fs::create_dir_all(source.join("Scripts")).unwrap();
+            fs::write(source.join("Scripts/Example.c"), "class Example {}\n").unwrap();
+            fs::write(source.join("Example.et"), "resource").unwrap();
+        }
+        let inventory = root.join("graph.json");
+        fs::write(&inventory, serde_json::to_vec(&serde_json::json!({
+            "schema": "reforger-workbench-loaded-addon-graph-v1",
+            "bridgeVersion": "test", "protocolVersion": 1,
+            "addons": [
+                {"guid":"1111111111111111", "id":"First", "title":"First", "sourceRoot":first},
+                {"guid":"2222222222222222", "id":"Second", "title":"Second", "sourceRoot":second},
+            ],
+        })).unwrap()).unwrap();
+        let storage = root.join("indexes");
+        let control = IndexBuildControl::default();
+        let built =
+            load_or_build_loaded_addon_indexes(&inventory, &storage, &[], &control).unwrap();
+        // The warm selection path must not require locator-rich manifests.
+        for instance in &built.instances {
+            fs::remove_file(instance.cache_path.parent().unwrap().join("manifest.json")).unwrap();
+        }
+        let mut config = ResourceCatalogueConfig {
+            addon_index_storage: Some(storage.clone()),
+            external_index_mode: GameDataExternalIndexMode::All,
+            ..ResourceCatalogueConfig::default()
+        };
+        let symbols = load_all_cached_addon_indexes(&storage, &[], &control).unwrap();
+        let (resources, stats) = ResourceCatalogue::from_config(&config, &control).unwrap();
+        assert_eq!(stats.addon_count, 2);
+        for instance in &symbols.instances {
+            assert!(resources
+                .records
+                .iter()
+                .any(|record| record.addon_guid == instance.guid));
+        }
+        // All mode ignores even an invalid graph for its external selection.
+        config.addon_source_inventory = Some(root.join("missing-graph.json"));
+        let (offline, _) = ResourceCatalogue::from_config(&config, &control).unwrap();
+        assert_eq!(offline.records, resources.records);
+
+        // A corrupt semantic payload cannot hide valid resource metadata.
+        let cache = &built.instances[0].cache_path;
+        let valid_bytes = fs::read(cache).unwrap();
+        fs::write(cache, b"corrupt").unwrap();
+        let partial = load_all_cached_addon_indexes(&storage, &[], &control).unwrap();
+        assert_eq!(partial.loaded_instances, 1);
+        assert_eq!(partial.missing_instances, 1);
+        assert_eq!(
+            ResourceCatalogue::from_config(&config, &control)
+                .unwrap()
+                .1
+                .addon_count,
+            2
+        );
+        fs::write(cache, valid_bytes).unwrap();
+
+        // Workspace instances leave the external scope, but resources still
+        // project their current loose files when a live graph names them.
+        config.workspace_roots = vec![second.clone()];
+        let external =
+            load_all_cached_addon_indexes(&storage, &config.workspace_roots, &control).unwrap();
+        assert_eq!(external.loaded_instances, 1);
+        assert_eq!(
+            ResourceCatalogue::from_config(&config, &control)
+                .unwrap()
+                .1
+                .addon_count,
+            1
+        );
+        config.addon_source_inventory = Some(inventory);
+        fs::write(second.join("Live.et"), "live workspace resource").unwrap();
+        let (with_workspace, _) = ResourceCatalogue::from_config(&config, &control).unwrap();
+        assert!(with_workspace
+            .records
+            .iter()
+            .any(|record| record.logical_path == "Live.et"));
+
+        // Removing a cached source retains only explicitly stale metadata.
+        config.workspace_roots.clear();
+        config.addon_source_inventory = None;
+        fs::remove_dir_all(&first).unwrap();
+        let (stale, stats) = ResourceCatalogue::from_config(&config, &control).unwrap();
+        assert!(stats.stale_resource_count > 0);
+        assert!(stale
+            .records
+            .iter()
+            .filter(|record| record.addon_guid == "1111111111111111")
+            .all(|record| record.stale && record.source_identity.starts_with("stale-cache:")));
+        assert!(stale
+            .records
+            .iter()
+            .filter(|record| record.addon_guid == "2222222222222222")
+            .all(|record| !record.stale));
+        config.external_index_mode = GameDataExternalIndexMode::None;
+        assert!(ResourceCatalogue::from_config(&config, &control).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

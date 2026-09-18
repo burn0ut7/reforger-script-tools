@@ -19,6 +19,19 @@ language feature or live Workbench operation. No ADR files were present.
 
 ## Prioritized remaining work
 
+The user authorized pursuing the full review as an active goal on 2026-09-18.
+Complete each item through its acceptance checks or record the evidence for
+retaining a necessary path. A documented uncertainty alone does not complete
+an implementation priority. Commit and push coherent verified slices on `MCP`.
+
+| Work | Execution status |
+| --- | --- |
+| 1. External scope selection | Completed: shared cached selection and removal of stale-graph fallback; build and 1,052 Rust tests pass. |
+| 2. MCP worker lifetime | Admission ownership inventory in progress. |
+| 3–9. Remaining architecture priorities | Queued in the order below. |
+| Clean-window MCP activation | Reproduce and diagnose the failed acceptance gate. |
+| Final acceptance | Full Rust/extension/package checks and feasible live Workbench acceptance. |
+
 Recommendation strength indicates confidence in investigating the seam, not
 permission to delete behavior before its acceptance conditions are met.
 
@@ -35,6 +48,28 @@ permission to delete behavior before its acceptance conditions are met.
 | 9 | Remove handwritten comment parsing from Search previews | Worth exploring | Preserve preview quality and latency through Rust-owned lexical facts. |
 
 ## 1. One external scope policy for symbols and resources
+
+**Completed:** Cached instance filtering, stable ordering, and dependency GUID
+preference now live in one selector consumed by symbols and resource metadata.
+Resource `all` mode uses that selector without requiring an inventory; the
+second stale-graph parser was deleted. Workspace loose-resource projection
+remains separate and requires its current graph identity. Missing cached roots
+retain their recorded identity, and resource reads explicitly label an exact
+cached resource snapshot as stale. A corrupt semantic payload does not make
+otherwise readable resource metadata unavailable.
+
+Validation: the new regression covers no/missing inventory, disabled mode,
+workspace exclusion and live-resource preservation, a corrupt semantic cache,
+stale resource provenance, and warm operation with full manifests removed.
+Existing duplicate-GUID and loaded-scope union tests remain green. `compile`
+and all 1,052 Rust tests passed; logs are `.cache/reports/review-scope-compile.log`
+and `.cache/reports/review-scope-server.log`. The selection refactor adds no
+semantic decode or full-manifest read to resource selection or warm startup.
+This is an I/O-path claim, not an end-to-end speedup claim. Primary resource
+evidence: packaged `Resource Manager` lines 3–15 and `Data Modding Basics`
+lines 5–28; no engine-facing identifiers changed.
+
+The original investigation below records the problem and acceptance rationale.
 
 **Files:** `server/src/game_data_catalogue.rs::initialize_catalogue`,
 `server/src/resource_catalogue.rs::ResourceCatalogue::from_config_for_addons`,
