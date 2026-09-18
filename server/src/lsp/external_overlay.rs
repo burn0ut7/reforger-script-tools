@@ -31,7 +31,9 @@ const MAX_DOCUMENT_EXCLUDED_WORKSPACE_INDEXES: usize = 4;
 
 fn index_phase(scope_authority: AddonScopeAuthority) -> &'static str {
     match scope_authority {
-        AddonScopeAuthority::ProjectDependencies => "offline",
+        AddonScopeAuthority::CachedInstances | AddonScopeAuthority::ProjectDependencies => {
+            "offline"
+        }
         AddonScopeAuthority::WorkbenchLoaded
         | AddonScopeAuthority::ProjectDependenciesAndWorkbench => "workbench-reconciliation",
     }
@@ -1729,6 +1731,7 @@ mod tests {
 
     #[test]
     fn index_phases_separate_offline_hydration_from_workbench_reconciliation() {
+        assert_eq!(index_phase(AddonScopeAuthority::CachedInstances), "offline");
         assert_eq!(
             index_phase(AddonScopeAuthority::ProjectDependencies),
             "offline"

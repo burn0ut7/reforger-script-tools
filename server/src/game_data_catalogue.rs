@@ -1418,17 +1418,26 @@ mod tests {
         })
         .status(&IndexBuildControl::default())
         .unwrap();
-        let all_status = GameDataCatalogue::new(GameDataCatalogueConfig {
+        let all_catalogue = GameDataCatalogue::new(GameDataCatalogueConfig {
             addon_source_inventory: Some(graph),
             addon_index_storage: Some(storage),
             external_index_mode: GameDataExternalIndexMode::All,
             ..GameDataCatalogueConfig::default()
-        })
-        .status(&IndexBuildControl::default())
-        .unwrap();
+        });
+        let all_status = all_catalogue.status(&IndexBuildControl::default()).unwrap();
 
         assert_eq!(loaded_status.addons.len(), 1);
         assert_eq!(all_status.addons.len(), 2);
+        assert_eq!(
+            all_status.scope_authority.as_deref(),
+            Some("cached-instances")
+        );
+        assert!(
+            !all_catalogue
+                .relationship_snapshot(&IndexBuildControl::default())
+                .unwrap()
+                .addon_order_authoritative
+        );
         assert!(all_status
             .addons
             .iter()

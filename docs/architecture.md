@@ -133,6 +133,12 @@ warm validation, while the full JSON manifest remains the repair/debug record.
 The cache root also maintains a compact `cache-catalogue.json`; dependency
 selection reads that catalogue directly and only scans cache roots to repair a
 missing or invalid catalogue.
+Cache-only scopes report `cached-instances` and an offline lifecycle phase;
+their directory ordering is never presented as authoritative Workbench add-on
+ordering. Missing-header/full-manifest and missing-locator/JSON recovery remain
+supported for compatible caches. These are repair paths, not competing normal
+authorities; a format retirement must preserve offline navigation and integrity
+checks before deleting them.
 Retired pointer/revision layouts are never read or migrated; they are
 discarded and rebuilt from the current Workbench graph.
 A cancelled or

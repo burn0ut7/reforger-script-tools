@@ -40,6 +40,7 @@ const MAX_LOCATOR_STRING_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddonScopeAuthority {
+    CachedInstances,
     WorkbenchLoaded,
     ProjectDependencies,
     ProjectDependenciesAndWorkbench,
@@ -48,6 +49,7 @@ pub enum AddonScopeAuthority {
 impl AddonScopeAuthority {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::CachedInstances => "cached-instances",
             Self::WorkbenchLoaded => "workbench-loaded",
             Self::ProjectDependencies => "project-dependencies-provisional",
             Self::ProjectDependenciesAndWorkbench => "project-dependencies-and-workbench-loaded",
@@ -1607,11 +1609,9 @@ fn scan_cached_manifest_descriptors(
             }
             Err(_) => continue,
         };
+        // Full manifests contain this same header projection. A failed header
+        // decode cannot be repaired by decoding their additional locator fields.
         let Ok(manifest) = serde_json::from_slice::<AddonIndexManifestHeader>(&manifest_bytes)
-            .or_else(|_| {
-                serde_json::from_slice::<AddonIndexManifest>(&manifest_bytes)
-                    .map(|manifest| manifest.header())
-            })
         else {
             continue;
         };
@@ -1896,7 +1896,7 @@ fn load_cached_indexes_from_storage(
         scope_authority: if dependency_guids.is_some() {
             AddonScopeAuthority::ProjectDependencies
         } else {
-            AddonScopeAuthority::WorkbenchLoaded
+            AddonScopeAuthority::CachedInstances
         },
         summary,
         rebuilt_instances: 0,
@@ -2065,7 +2065,7 @@ fn empty_cached_index_result(
         scope_authority: if dependency_scope {
             AddonScopeAuthority::ProjectDependencies
         } else {
-            AddonScopeAuthority::WorkbenchLoaded
+            AddonScopeAuthority::CachedInstances
         },
         summary: RuntimeIndexSummary::default(),
         rebuilt_instances: 0,
@@ -4850,6 +4850,9 @@ mod tests {
             .path();
         let manifest: AddonIndexManifest =
             serde_json::from_slice(&fs::read(addon_cache.join("manifest.json")).unwrap()).unwrap();
+        let projected_header: AddonIndexManifestHeader =
+            serde_json::from_slice(&fs::read(addon_cache.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(projected_header, manifest.header());
         let uris = manifest
             .scripts
             .iter()
@@ -5000,6 +5003,10 @@ mod tests {
             load_all_cached_addon_indexes(&storage, &[], &IndexBuildControl::default()).unwrap();
         assert_eq!(all_cached.loaded_instances, 1);
         assert_eq!(
+            all_cached.scope_authority,
+            AddonScopeAuthority::CachedInstances
+        );
+        assert_eq!(
             all_cached.instances[0].thumbnail_color.as_deref(),
             Some("#00FF00")
         );
@@ -5029,6 +5036,11 @@ mod tests {
             legacy_header_fallback.cache_status,
             IndexCacheStatus::Loaded
         );
+        fs::remove_file(storage.join(ADDON_CACHE_CATALOGUE_FILE)).unwrap();
+        let repaired_catalogue =
+            load_all_cached_addon_indexes(&storage, &[], &IndexBuildControl::default()).unwrap();
+        assert_eq!(repaired_catalogue.loaded_instances, 1);
+        assert!(storage.join(ADDON_CACHE_CATALOGUE_FILE).is_file());
         assert!(!addon_cache.join("scripts").exists());
         let _ = fs::remove_dir_all(root);
     }

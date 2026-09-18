@@ -30,7 +30,8 @@ an implementation priority. Commit and push coherent verified slices on `MCP`.
 | 2. MCP worker lifetime | Completed: one launcher owns actual worker admission; build and 1,054 Rust tests pass. |
 | 3. Candidate index ownership | Completed: exact runtime owners replace substitution; build and 1,057 Rust tests pass. |
 | 4. Shared foreground syntax | Completed: shared immutable syntax; profile improves allocations/retention, build and 1,058 Rust tests pass. |
-| 5–9. Remaining architecture priorities | Queued in the order below. |
+| 5. Cache metadata | Verified: retained compact/repair formats, removed unreachable decode, corrected cache-only provenance. Build and 1,058 Rust tests pass; first-navigation measurement follows the priority 6 report repair. |
+| 6–9. Remaining architecture priorities | Queued in the order below. |
 | Clean-window MCP activation | Reproduce and diagnose the failed acceptance gate. |
 | Final acceptance | Full Rust/extension/package checks and feasible live Workbench acceptance. |
 
@@ -269,6 +270,39 @@ errors, overload, and external-index changes. A mutable shared parse or
 request-time synchronous rebuild would violate the current contract.
 
 ## 5. Retire overlapping cache metadata formats
+
+**Decision:** Retain the compact catalogue/header, semantic container, and full
+repair manifest. They serve different I/O and recovery contracts. Current
+add-on writers always embed binary locators; the generic cache writer also
+supports indexes without locators. Compatible older add-on caches still need
+the JSON-locator recovery path, and missing headers must remain recoverable
+offline. Retire that compatibility only with an explicit cache-format transition
+and a verified replacement for offline source navigation. No format migration
+is justified merely to reduce the file count.
+
+The current local three-instance cache has 7,563 bytes of headers versus
+3,576,289 bytes of full manifests, plus an 8,353-byte catalogue. Thirty warm
+Node read/JSON-parse samples had medians of 0.37 ms for the headers and 6.73 ms
+for the manifests. This diagnostic-reader comparison is not Rust startup
+timing; it confirms the scale of metadata avoided. The real-process baseline
+loaded 146,931 symbols: initial Game Data status took 136.83 ms, repeated status
+median 2.82 ms, and two fresh processes had first-status median 123.80 ms.
+It did not measure first navigation: the performance runner omitted an explicit
+tool profile and had no scenarios for the compact generic tools. Repairing that
+caller is part of priority 6, after which navigation will be measured.
+
+**Implemented cleanup:** Removed the unreachable full-manifest retry after
+header projection decoding fails: a valid full manifest already contains every
+header field. Regression assertions preserve that projection and rebuilding a
+missing catalogue when the compact header is also absent. Cache-only scopes
+now report `cached-instances`, use the offline log phase, and no longer claim
+that directory order is authoritative Workbench order in relationship evidence.
+The 12 focused cache checks, production build, and all 1,058 Rust tests pass.
+Logs: `.cache/reports/review-cache-compile.log` and
+`.cache/reports/review-cache-server.log`.
+Measurements are under `.cache/reports/review-cache-{metadata-profile.json,runtime.json}`.
+
+The original investigation below records the problem and acceptance rationale.
 
 **Files:** `server/src/addon_sources.rs::{cached_manifest_descriptors,
 scan_cached_manifest_descriptors,load_cached_source_revision,
