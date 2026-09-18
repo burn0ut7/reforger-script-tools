@@ -28,7 +28,8 @@ an implementation priority. Commit and push coherent verified slices on `MCP`.
 | --- | --- |
 | 1. External scope selection | Completed: shared cached selection and removal of stale-graph fallback; build and 1,052 Rust tests pass. |
 | 2. MCP worker lifetime | Completed: one launcher owns actual worker admission; build and 1,054 Rust tests pass. |
-| 3–9. Remaining architecture priorities | Queued in the order below. |
+| 3. Candidate index ownership | Completed: exact runtime owners replace substitution; build and 1,057 Rust tests pass. |
+| 4–9. Remaining architecture priorities | Queued in the order below. |
 | Clean-window MCP activation | Reproduce and diagnose the failed acceptance gate. |
 | Final acceptance | Full Rust/extension/package checks and feasible live Workbench acceptance. |
 
@@ -160,6 +161,22 @@ count remains bounded, ping remains responsive, EOF shuts down, cancelled
 results cannot publish, and Workbench mutations retain their distinct effects.
 
 ## 3. Remove cross-index candidate substitution
+
+**Completed:** Candidates now capture their producing index's runtime
+identity. The LSP lookup accepts only that exact owner, regardless of evidence
+category or slot, and the workspace/Game Data fallback chain is removed.
+Independent clones and decoded indexes get distinct runtime identities without
+changing the persisted format. Candidate deduplication also includes ownership;
+previously equal numeric IDs could suppress a candidate from another index.
+
+Focused regression checks cover colliding IDs, missing and replaced owners,
+all four source categories, unchanged serialized snapshots, layered indexes,
+fixture hover, static-constant coloring, and debug details. `compile` and all
+1,057 Rust tests pass. Logs: `.cache/reports/review-ownership-focused.log`,
+`.cache/reports/review-ownership-compile.log`, and
+`.cache/reports/review-ownership-server.log`.
+
+The original investigation below records the problem and acceptance rationale.
 
 **Files:** `server/src/lsp/external_indexes.rs::ExternalIndexes::for_candidate`;
 callers in `hover.rs`, `debug_hover.rs`, and `semantic_tokens.rs`.

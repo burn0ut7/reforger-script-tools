@@ -10,7 +10,19 @@ use crate::semantic_file::{
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+/// Runtime ownership of symbol IDs; never persisted in an index cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct SymbolIndexId(u64);
+
+impl Default for SymbolIndexId {
+    fn default() -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT_ID.fetch_add(1, Ordering::Relaxed))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SourceFileId(pub usize);
@@ -92,8 +104,9 @@ pub struct MemberShadowGroup {
     pub shadowed: Vec<GlobalSymbolId>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct SymbolIndex {
+    identity: SymbolIndexId,
     files: Vec<IndexedFile>,
     symbols: Vec<IndexedSymbol>,
     /// Immutable child indexes retained by a runtime-only layered projection.
@@ -113,6 +126,33 @@ pub struct SymbolIndex {
     members_by_owner: BTreeMap<String, Vec<GlobalSymbolId>>,
     #[cfg(test)]
     lookup_map_rebuild_count: usize,
+}
+
+impl Clone for SymbolIndex {
+    fn clone(&self) -> Self {
+        // A cloned index can subsequently be edited independently. Its numeric
+        // symbol IDs must therefore belong to a different runtime owner.
+        Self {
+            identity: SymbolIndexId::default(),
+            files: self.files.clone(),
+            symbols: self.symbols.clone(),
+            layers: self.layers.clone(),
+            file_id_base: self.file_id_base,
+            by_name: self.by_name.clone(),
+            top_level_by_name: self.top_level_by_name.clone(),
+            top_level_by_folded_name: self.top_level_by_folded_name.clone(),
+            by_kind: self.by_kind.clone(),
+            children: self.children.clone(),
+            classes_by_name: self.classes_by_name.clone(),
+            typedefs_by_name: self.typedefs_by_name.clone(),
+            functions_by_name: self.functions_by_name.clone(),
+            methods_by_owner_name: self.methods_by_owner_name.clone(),
+            fields_by_owner_name: self.fields_by_owner_name.clone(),
+            members_by_owner: self.members_by_owner.clone(),
+            #[cfg(test)]
+            lookup_map_rebuild_count: self.lookup_map_rebuild_count,
+        }
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -330,6 +370,7 @@ impl From<SymbolIndexSnapshot> for SymbolIndex {
         let top_level_by_name = snapshot.top_level_by_name.into_iter().collect();
         let top_level_by_folded_name = folded_top_level_names(&top_level_by_name);
         Self {
+            identity: SymbolIndexId::default(),
             files: snapshot.files,
             symbols: snapshot.symbols,
             layers: Vec::new(),
@@ -370,6 +411,10 @@ impl<'de> Deserialize<'de> for SymbolIndex {
 }
 
 impl SymbolIndex {
+    pub(crate) fn identity(&self) -> SymbolIndexId {
+        self.identity
+    }
+
     pub fn from_semantic_files<'a>(
         files: impl IntoIterator<Item = (&'a SemanticFile, SourceFileMetadata)>,
     ) -> Self {

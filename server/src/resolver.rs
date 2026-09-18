@@ -64,6 +64,7 @@ pub struct SyntaxSpanResolution {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferenceCandidate {
+    pub(crate) index_id: crate::index::SymbolIndexId,
     pub source: CandidateSource,
     pub id: GlobalSymbolId,
     pub reason: ResolutionReason,
@@ -1386,6 +1387,7 @@ type InferredReceiverType = ExpressionType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct CandidateKey {
+    index_id: crate::index::SymbolIndexId,
     source: CandidateSource,
     id: GlobalSymbolId,
 }
@@ -1410,7 +1412,11 @@ fn push_index_candidate(
     id: GlobalSymbolId,
     reason: ResolutionReason,
 ) {
-    let key = CandidateKey { source, id };
+    let key = CandidateKey {
+        index_id: index.identity(),
+        source,
+        id,
+    };
     if !seen.insert(key) {
         return;
     }
@@ -1467,6 +1473,7 @@ fn candidate_from_symbol(
     file: &IndexedFile,
 ) -> ReferenceCandidate {
     ReferenceCandidate {
+        index_id: index.identity(),
         source,
         id,
         reason,

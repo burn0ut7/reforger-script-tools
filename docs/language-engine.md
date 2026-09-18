@@ -25,6 +25,14 @@ definition, signature help, and semantic tokens. A feature should use a shared
 layer whenever the fact can serve more than one feature; adapters only project
 those facts to a client protocol.
 
+Resolver candidates pair their numeric symbol ID with the runtime identity of
+the exact index that produced it. Source categories describe evidence; they do
+not select an owning index. Hover, semantic coloring, and debug reports accept
+only that captured owner, and a missing owner produces no substitute lookup.
+Independent clones and decoded indexes get new identities; the identity is not
+part of the persisted cache format. Candidate deduplication includes the owner
+so equal numeric IDs from separate indexes remain distinct.
+
 ```text
 source text
   -> lexer and parser
