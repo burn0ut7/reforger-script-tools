@@ -90,7 +90,8 @@ pub(crate) fn signature_help_report_for_cached_analysis_with_external_indexes(
     };
 
     let context_start = Instant::now();
-    let Some(context) = callable_argument_context_at_offset(source, &analysis.parse.root, offset)
+    let Some(context) =
+        callable_argument_context_at_offset(source, &analysis.syntax.parse.root, offset)
     else {
         let mut report = empty_signature_help_report(analysis.parse_diagnostics, total_start);
         report.timings.context_detection = context_start.elapsed();
@@ -102,7 +103,7 @@ pub(crate) fn signature_help_report_for_cached_analysis_with_external_indexes(
     let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
         source,
         &analysis.index,
-        &analysis.parse,
+        &analysis.syntax.parse,
         &analysis.scope,
         workspace_index.into_iter().chain(game_data_index),
     );
@@ -924,12 +925,17 @@ class Example
     fn foreground_callable_declarations_extract_complete_current_method() {
         let source =
             "class Example { void Current(string currentValue) {} void Test() { Current(\"\", ); } }";
-        let parse = crate::parser::parse_source(source);
-        let foreground = ForegroundQuerySnapshot::build(source, crate::lexer::lex(source), &parse);
+        let syntax = std::sync::Arc::new(crate::lsp::open_documents::DocumentSyntax::new(source));
+        let foreground = ForegroundQuerySnapshot::build(source, syntax.clone());
         let candidates = foreground
             .callable_declarations_named("Current")
             .collect::<Vec<_>>();
-        assert_eq!(candidates.len(), 1, "diagnostics={:?}", parse.diagnostics);
+        assert_eq!(
+            candidates.len(),
+            1,
+            "diagnostics={:?}",
+            syntax.parse.diagnostics
+        );
         assert_eq!(candidates[0].signature, "void Current(string currentValue)");
     }
 

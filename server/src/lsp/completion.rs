@@ -255,7 +255,7 @@ pub(crate) fn completion_report_for_cached_analysis_with_external_indexes(
     let Some(offset) = offset_for_position(source, position) else {
         return empty_completion_report(analysis.parse_diagnostics);
     };
-    if completion_cursor_is_in_comment_or_string(&analysis.lexer_tokens, offset) {
+    if completion_cursor_is_in_comment_or_string(&analysis.syntax.lexer_tokens, offset) {
         return empty_completion_report(analysis.parse_diagnostics);
     }
     let mut report =
@@ -2802,7 +2802,7 @@ fn completion_report_for_offset(
     workspace_index: Option<&SymbolIndex>,
     game_data_index: Option<&SymbolIndex>,
 ) -> LspCompletionReport {
-    if completion_cursor_is_in_comment_or_string(&analysis.lexer_tokens, offset) {
+    if completion_cursor_is_in_comment_or_string(&analysis.syntax.lexer_tokens, offset) {
         return empty_completion_report(analysis.parse_diagnostics);
     }
     let total_start = Instant::now();
@@ -2819,11 +2819,13 @@ fn completion_report_for_offset(
             total_start,
         );
     }
-    if let Some(new_operand) = new_operand_before_offset(source, &analysis.lexer_tokens, offset) {
+    if let Some(new_operand) =
+        new_operand_before_offset(source, &analysis.syntax.lexer_tokens, offset)
+    {
         let query = ConstructionQuery::new(
             source,
-            &analysis.parse,
-            &analysis.lexer_tokens,
+            &analysis.syntax.parse,
+            &analysis.syntax.lexer_tokens,
             &analysis.index,
             &analysis.scope,
             ExternalIndexes::new(workspace_index, game_data_index).ordered(),
@@ -2948,12 +2950,14 @@ fn completion_report_for_offset(
     let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
         source,
         &analysis.index,
-        &analysis.parse,
+        &analysis.syntax.parse,
         &analysis.scope,
         ExternalIndexes::new(workspace_index, game_data_index).ordered(),
     );
     let mut argument_label_fallback = None;
-    if let Some(context) = argument_label_completion_context(source, &analysis.parse.root, offset) {
+    if let Some(context) =
+        argument_label_completion_context(source, &analysis.syntax.parse.root, offset)
+    {
         let context_elapsed = context_start.elapsed();
         let argument_label_report = argument_label_completion_report_for_indexes(
             source,
@@ -2974,8 +2978,8 @@ fn completion_report_for_offset(
         }
     }
 
-    if let Some(context) =
-        resolver.member_completion_context_at_offset_with_tokens(offset, &analysis.lexer_tokens)
+    if let Some(context) = resolver
+        .member_completion_context_at_offset_with_tokens(offset, &analysis.syntax.lexer_tokens)
     {
         let context_elapsed = context_start.elapsed();
         let receiver_text = Some(context.receiver.receiver_text.clone());
@@ -3055,8 +3059,8 @@ fn completion_report_for_offset(
         return report;
     }
 
-    let top_level_context =
-        resolver.top_level_completion_context_at_offset_with_tokens(offset, &analysis.lexer_tokens);
+    let top_level_context = resolver
+        .top_level_completion_context_at_offset_with_tokens(offset, &analysis.syntax.lexer_tokens);
     let context_elapsed = context_start.elapsed();
     let Some(context) = top_level_context else {
         if let Some(fallback) = argument_label_fallback {
@@ -4222,7 +4226,7 @@ fn top_level_completion_report_for_indexes(
                 edit_range,
                 &typed_modifiers,
                 &prefix,
-                override_completion_has_existing_body(&analysis.lexer_tokens, prefix_span),
+                override_completion_has_existing_body(&analysis.syntax.lexer_tokens, prefix_span),
             );
         let insert_context = completion_insert_context(source, prefix_span.start, mode);
         let (source_items, source_counts, source_origins) = completion_items_for_candidates(

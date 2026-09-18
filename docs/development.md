@@ -73,6 +73,17 @@ explicit example targets, so existing commands such as
 the supported way to run them. They are developer tooling and never a runtime
 dependency of the extension.
 
+The document-syntax sharing comparison is an opt-in unit benchmark because it
+measures the private foreground/semantic boundary. It reports seven warm
+samples' median-total case, including current-thread allocation calls and live
+bytes at the end of construction. The allocator wrapper is under
+`tools/testing/` and compiles only into unit tests, never the runtime:
+
+```powershell
+$env:CARGO_TARGET_DIR = Join-Path $PWD '.cache/cargo/server-tests'
+cargo test --manifest-path server/Cargo.toml --features test-hooks --lib profile_shared_document_syntax -- --ignored --nocapture
+```
+
 To build a scorecard for the public non-Workbench MCP catalogue through real
 stdio processes, run:
 

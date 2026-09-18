@@ -29,7 +29,8 @@ an implementation priority. Commit and push coherent verified slices on `MCP`.
 | 1. External scope selection | Completed: shared cached selection and removal of stale-graph fallback; build and 1,052 Rust tests pass. |
 | 2. MCP worker lifetime | Completed: one launcher owns actual worker admission; build and 1,054 Rust tests pass. |
 | 3. Candidate index ownership | Completed: exact runtime owners replace substitution; build and 1,057 Rust tests pass. |
-| 4–9. Remaining architecture priorities | Queued in the order below. |
+| 4. Shared foreground syntax | Completed: shared immutable syntax; profile improves allocations/retention, build and 1,058 Rust tests pass. |
+| 5–9. Remaining architecture priorities | Queued in the order below. |
 | Clean-window MCP activation | Reproduce and diagnose the failed acceptance gate. |
 | Final acceptance | Full Rust/extension/package checks and feasible live Workbench acceptance. |
 
@@ -208,6 +209,34 @@ coloring, and debug reports. Verify that a missing owner never selects a
 different declaration and ordinary navigation remains identical.
 
 ## 4. Reuse foreground syntax in semantic analysis
+
+**Completed:** The foreground result owns one immutable lexical/parse
+allocation. Semantic jobs capture that exact allocation with the admitted
+source revision. The document no longer retains a second parser output, and
+semantic analysis no longer rebuilds tokens/parse or copies parser diagnostics.
+No mutable cache or request-time rebuild was added. Existing admission and
+publication gates remain intact.
+
+An opt-in unit benchmark compares repeated construction with sharing on the same
+286,890-byte synthetic document (2,000 declaration fixtures), using seven warm
+samples. At the median-total sample, foreground time was 12.70 / 11.76 ms and
+combined analysis time was 72.83 / 59.91 ms; allocation calls were 391,184 /
+287,155 and retained bytes were 36,643,502 / 27,205,054 (repeated / shared).
+This isolates construction in one process and counts allocations on the measured
+thread; it is not an editor end-to-end latency or process-RSS claim. The allocator
+wrapper exists only in the unit-test build. Log:
+`.cache/reports/review-syntax-profile.log`.
+
+Focused checks prove one tokenization, shared ownership, malformed-source
+diagnostics, rejection of superseded results, and release of an obsolete parse.
+The executor check covers both stages without semantic re-tokenization.
+`compile` and all 1,058 Rust tests pass, including cancellation, closed-document,
+overload, and external-generation cases. The manual profile is intentionally
+ignored by the regular suite and passed separately. Logs:
+`.cache/reports/review-syntax-compile.log` and
+`.cache/reports/review-syntax-server.log`.
+
+The original investigation below records the problem and acceptance rationale.
 
 **Files:** `server/src/lsp/runtime_scheduler.rs::RuntimeWorkExecutor::execute`,
 `server/src/lsp/open_documents.rs::{OpenDocument,FileIndexAnalysis,

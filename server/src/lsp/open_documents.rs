@@ -6,7 +6,7 @@ use crate::model::{SourceFileMetadata, SymbolKind};
 use crate::parser::parse_lexed_source;
 use crate::scope::LexicalScopeModel;
 use crate::semantic_file::SemanticFile;
-use crate::syntax::{Parse, ParseDiagnostic};
+use crate::syntax::Parse;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -23,9 +23,6 @@ pub(crate) struct OpenDocument {
     /// The runtime-owned immutable source identity.  Analysis and caches below
     /// are derived state only and may never outlive this revision.
     pub(crate) snapshot: DocumentSnapshot,
-    /// Current-revision parser output, retained independently from deferred
-    /// semantic/index analysis so parser diagnostics never wait for it.
-    syntax: Option<Parse>,
     /// Foreground-only query facts for this exact revision. Semantic work is
     /// deliberately not allowed to manufacture or replace this state.
     foreground: Option<ForegroundQuerySnapshot>,
@@ -46,11 +43,9 @@ impl OpenDocument {
         // the production executor. The transport path never calls this: it
         // installs the same state through a `TaskClass::Foreground` worker.
         let positions = PositionIndex::new(document.snapshot.text());
-        let lexer_tokens = lex(document.snapshot.text());
-        let syntax = parse_lexed_source(document.snapshot.text(), &lexer_tokens);
-        assert!(document.install_foreground(revision, positions, lexer_tokens, syntax));
-        let (analysis, analysis_timings) =
-            file_index_for_source_with_timings(document.snapshot.text());
+        let syntax = Arc::new(DocumentSyntax::new(document.snapshot.text()));
+        assert!(document.install_foreground(revision, positions, syntax.clone()));
+        let (analysis, analysis_timings) = file_index_for_syntax(document.snapshot.text(), syntax);
         assert!(document.install_analysis(revision, analysis, analysis_timings));
         document
     }
@@ -62,7 +57,6 @@ impl OpenDocument {
     pub(crate) fn pending(snapshot: DocumentSnapshot) -> Self {
         Self {
             snapshot,
-            syntax: None,
             foreground: None,
             analysis: None,
             analysis_timings: None,
@@ -76,7 +70,6 @@ impl OpenDocument {
 
     pub(crate) fn replace(&mut self, snapshot: DocumentSnapshot) {
         self.snapshot = snapshot;
-        self.syntax = None;
         self.foreground = None;
         self.analysis = None;
         self.analysis_timings = None;
@@ -94,7 +87,13 @@ impl OpenDocument {
     }
 
     pub(crate) fn syntax(&self) -> Option<&Parse> {
-        self.syntax.as_ref()
+        self.syntax_snapshot().map(|syntax| &syntax.parse)
+    }
+
+    pub(crate) fn syntax_snapshot(&self) -> Option<&Arc<DocumentSyntax>> {
+        self.foreground
+            .as_ref()
+            .map(|foreground| &foreground.syntax)
     }
 
     pub(crate) fn parse_diagnostic_count(&self) -> usize {
@@ -105,8 +104,7 @@ impl OpenDocument {
         &mut self,
         revision: u64,
         positions: PositionIndex,
-        lexer_tokens: Vec<Token>,
-        syntax: Parse,
+        syntax: Arc<DocumentSyntax>,
     ) -> bool {
         if revision != self.snapshot.revision() {
             return false;
@@ -116,17 +114,12 @@ impl OpenDocument {
         if !self.snapshot.install_positions(positions) && self.snapshot.positions().is_none() {
             return false;
         }
-        self.foreground = Some(ForegroundQuerySnapshot::build(
-            self.snapshot.text(),
-            lexer_tokens,
-            &syntax,
-        ));
-        self.syntax = Some(syntax);
+        self.foreground = Some(ForegroundQuerySnapshot::build(self.snapshot.text(), syntax));
         true
     }
 
     pub(crate) fn foreground_ready(&self) -> bool {
-        self.foreground.is_some() && self.syntax.is_some() && self.snapshot.positions().is_some()
+        self.foreground.is_some() && self.snapshot.positions().is_some()
     }
 
     pub(crate) fn foreground(&self) -> Option<&ForegroundQuerySnapshot> {
@@ -583,7 +576,7 @@ impl SemanticTokenCache {
 /// parse, or walk the CST/AST themselves.
 #[derive(Clone)]
 pub(crate) struct ForegroundQuerySnapshot {
-    tokens: Vec<Token>,
+    syntax: Arc<DocumentSyntax>,
     scope_delimiters: Vec<ScopeDelimiter>,
     top_level_declarations: Vec<ForegroundTopLevelDeclaration>,
     callable_declarations: Vec<ForegroundCallableDeclaration>,
@@ -603,22 +596,25 @@ pub(crate) struct ForegroundCallableDeclaration {
 }
 
 impl ForegroundQuerySnapshot {
-    pub(crate) fn build(source: &str, tokens: Vec<Token>, parse: &Parse) -> Self {
+    pub(crate) fn build(source: &str, syntax: Arc<DocumentSyntax>) -> Self {
+        let tokens = &syntax.lexer_tokens;
+        let parse = &syntax.parse;
         let scope_delimiters = if source.len() <= MAX_ACTIVE_SCOPE_DELIMITER_SOURCE_BYTES {
-            scope_delimiters_for_syntax(parse, &tokens)
+            scope_delimiters_for_syntax(parse, tokens)
         } else {
             Vec::new()
         };
         Self {
-            top_level_declarations: foreground_top_level_declarations(source, &tokens),
+            top_level_declarations: foreground_top_level_declarations(source, tokens),
             callable_declarations: foreground_callable_declarations(source, parse),
-            tokens,
+            syntax,
             scope_delimiters,
         }
     }
 
     pub(crate) fn token_at_offset(&self, offset: usize) -> Option<Token> {
-        self.tokens
+        self.syntax
+            .lexer_tokens
             .binary_search_by(|token| {
                 if token.span.end <= offset {
                     std::cmp::Ordering::Less
@@ -629,7 +625,7 @@ impl ForegroundQuerySnapshot {
                 }
             })
             .ok()
-            .and_then(|index| self.tokens.get(index).copied())
+            .and_then(|index| self.syntax.lexer_tokens.get(index).copied())
     }
 
     pub(crate) fn top_level_declaration_at_offset(
@@ -651,7 +647,7 @@ impl ForegroundQuerySnapshot {
     }
 
     pub(crate) fn tokens(&self) -> &[Token] {
-        &self.tokens
+        &self.syntax.lexer_tokens
     }
 
     pub(crate) fn scope_delimiters(&self) -> &[ScopeDelimiter] {
@@ -796,10 +792,29 @@ fn foreground_callable_declaration(
     })
 }
 
-#[derive(Clone)]
-pub struct FileIndexAnalysis {
+/// One immutable lexical/syntax allocation shared by the foreground and
+/// semantic stages for a captured document revision.
+pub(crate) struct DocumentSyntax {
     pub(crate) parse: Parse,
     pub(crate) lexer_tokens: Vec<Token>,
+}
+
+impl DocumentSyntax {
+    pub(crate) fn new(source: &str) -> Self {
+        Self::from_tokens(source, lex(source))
+    }
+
+    pub(crate) fn from_tokens(source: &str, lexer_tokens: Vec<Token>) -> Self {
+        Self {
+            parse: parse_lexed_source(source, &lexer_tokens),
+            lexer_tokens,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct FileIndexAnalysis {
+    pub(crate) syntax: Arc<DocumentSyntax>,
     /// Immutable compiler-owned declaration and local-binding facts. The
     /// index and lexical scope below are feature compatibility projections of
     /// this semantic authority, never independent declaration discovery.
@@ -807,7 +822,6 @@ pub struct FileIndexAnalysis {
     pub(crate) index: SymbolIndex,
     pub(crate) scope: LexicalScopeModel,
     pub(crate) parse_diagnostics: usize,
-    pub(crate) diagnostics: Vec<ParseDiagnostic>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -823,18 +837,29 @@ pub fn file_index_for_source(source: &str) -> FileIndexAnalysis {
     file_index_for_source_with_timings(source).0
 }
 
-pub(crate) fn file_index_for_source_with_timings(
+fn file_index_for_source_with_timings(
     source: &str,
 ) -> (FileIndexAnalysis, FileIndexAnalysisTimings) {
     let total_start = Instant::now();
     let lexer_tokens = lex(source);
     let parse_start = Instant::now();
-    let parse = parse_lexed_source(source, &lexer_tokens);
+    let syntax = Arc::new(DocumentSyntax::from_tokens(source, lexer_tokens));
     let parse_ms = parse_start.elapsed().as_millis();
+    let (analysis, mut timings) = file_index_for_syntax(source, syntax);
+    timings.parse_ms = parse_ms;
+    timings.total_ms = total_start.elapsed().as_millis();
+    (analysis, timings)
+}
+
+pub(crate) fn file_index_for_syntax(
+    source: &str,
+    syntax: Arc<DocumentSyntax>,
+) -> (FileIndexAnalysis, FileIndexAnalysisTimings) {
+    let total_start = Instant::now();
+    let parse = &syntax.parse;
     let parse_diagnostics = parse.diagnostics.len();
-    let diagnostics = parse.diagnostics.clone();
     let catalog_start = Instant::now();
-    let semantic_file = SemanticFile::build(source, &parse);
+    let semantic_file = SemanticFile::build(source, parse);
     let catalog_ms = catalog_start.elapsed().as_millis();
     let index_start = Instant::now();
     let mut index = SymbolIndex::default();
@@ -853,20 +878,18 @@ pub(crate) fn file_index_for_source_with_timings(
     let index_ms = index_start.elapsed().as_millis();
     let scope_start = Instant::now();
     let scope =
-        LexicalScopeModel::from_parse_and_semantics(&parse, &semantic_file, &index, local_file_id);
+        LexicalScopeModel::from_parse_and_semantics(parse, &semantic_file, &index, local_file_id);
     let scope_ms = scope_start.elapsed().as_millis();
     (
         FileIndexAnalysis {
-            parse,
-            lexer_tokens,
+            syntax,
             semantic: semantic_file,
             index,
             scope,
             parse_diagnostics,
-            diagnostics,
         },
         FileIndexAnalysisTimings {
-            parse_ms,
+            parse_ms: 0,
             catalog_ms,
             index_ms,
             scope_ms,
@@ -891,8 +914,88 @@ mod tests {
         let before = crate::lexer::test_lex_call_count();
         let analysis = file_index_for_source(source);
         assert_eq!(crate::lexer::test_lex_call_count() - before, 1);
-        assert_eq!(analysis.parse, parse_source(source));
-        assert_eq!(analysis.lexer_tokens, lex(source));
+        assert_eq!(analysis.syntax.parse, parse_source(source));
+        assert_eq!(analysis.syntax.lexer_tokens, lex(source));
+    }
+
+    #[test]
+    fn foreground_and_semantics_share_one_revision_and_release_old_syntax() {
+        let mut store = DocumentStore::new();
+        let uri = "file:///Shared.c";
+        for source in ["class Valid {}", "class Broken { void Run( {"] {
+            store.upsert(uri, 1, source);
+            let snapshot = store.latest(uri).unwrap();
+            let revision = snapshot.revision();
+            let before = crate::lexer::test_lex_call_count();
+            let mut document = OpenDocument::new(snapshot);
+            assert_eq!(crate::lexer::test_lex_call_count() - before, 1);
+            assert!(Arc::ptr_eq(
+                document.syntax_snapshot().unwrap(),
+                &document.analysis().syntax
+            ));
+            assert_eq!(
+                document.parse_diagnostic_count(),
+                document.analysis().parse_diagnostics
+            );
+            let old_syntax = document.syntax_snapshot().unwrap().clone();
+            let old_weak = Arc::downgrade(&old_syntax);
+            store.upsert(uri, 2, "class Current {}");
+            document.replace(store.latest(uri).unwrap());
+            assert!(!document.install_foreground(
+                revision,
+                PositionIndex::new(source),
+                old_syntax.clone()
+            ));
+            let (old_analysis, timings) = file_index_for_syntax(source, old_syntax.clone());
+            assert!(!document.install_analysis(revision, old_analysis, timings));
+            assert!(!document.foreground_ready());
+            drop(old_syntax);
+            assert!(old_weak.upgrade().is_none());
+            store = DocumentStore::new();
+        }
+    }
+
+    #[test]
+    #[ignore = "manual timing/allocation comparison; run with --ignored --nocapture"]
+    fn profile_shared_document_syntax() {
+        let unit =
+            include_str!("../../../tools/fixtures/semantic/semantic_scale_declaration_unit.c");
+        let source: String = (0..2_000)
+            .map(|i| unit.replace("SemanticScaleFixture", &format!("Fixture{i}")))
+            .collect();
+        for shared in [false, true] {
+            let mut samples = Vec::new();
+            for _ in 0..8 {
+                let ((foreground_us, total_us, positions, foreground, analysis), memory) =
+                    crate::test_allocations::measure(|| {
+                        let start = Instant::now();
+                        let positions = PositionIndex::new(&source);
+                        let syntax = Arc::new(DocumentSyntax::new(&source));
+                        let foreground = ForegroundQuerySnapshot::build(&source, syntax.clone());
+                        let foreground_us = start.elapsed().as_micros();
+                        let analysis = if shared {
+                            file_index_for_syntax(&source, syntax).0
+                        } else {
+                            file_index_for_source(&source)
+                        };
+                        (
+                            foreground_us,
+                            start.elapsed().as_micros(),
+                            positions,
+                            foreground,
+                            analysis,
+                        )
+                    });
+                assert_eq!(Arc::ptr_eq(&foreground.syntax, &analysis.syntax), shared);
+                samples.push((foreground_us, total_us, memory));
+                drop((positions, foreground, analysis));
+            }
+            samples.remove(0); // Warm allocator/code before comparing seven samples.
+            samples.sort_by_key(|sample| sample.1);
+            let sample = samples[3];
+            println!("shared={shared} source_bytes={} foreground_us={} total_us={} allocations={} retained_bytes={} peak_bytes={}",
+                source.len(), sample.0, sample.1, sample.2.allocation_calls, sample.2.retained_bytes, sample.2.peak_bytes);
+        }
     }
 
     #[test]
@@ -909,9 +1012,9 @@ mod tests {
         );
         let snapshot = store.latest("file:///Scripts/Pending.c").unwrap();
         assert!(snapshot.install_positions(PositionIndex::new(snapshot.text())));
-        let parse = parse_source(snapshot.text());
-        let foreground =
-            ForegroundQuerySnapshot::build(snapshot.text(), lex(snapshot.text()), &parse);
+        let syntax = Arc::new(DocumentSyntax::new(snapshot.text()));
+        let parse = &syntax.parse;
+        let foreground = ForegroundQuerySnapshot::build(snapshot.text(), syntax.clone());
         let lex_calls_before_requests = crate::lexer::test_lex_call_count();
 
         let comment = hover_report_for_pending_snapshot(

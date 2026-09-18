@@ -93,7 +93,7 @@ fn debug_hover_report_for_cached_analysis_with_external_layers(
     let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
         source,
         index,
-        &analysis.parse,
+        &analysis.syntax.parse,
         &analysis.scope,
         ExternalIndexes::new(workspace_index, game_data_index).ordered(),
     );
@@ -161,7 +161,7 @@ fn debug_hover_report_for_cached_analysis_with_external_layers(
     );
 
     report.push_str("\n## Parse Diagnostics\n\n");
-    append_parse_diagnostics(&mut report, source, &analysis.diagnostics);
+    append_parse_diagnostics(&mut report, source, &analysis.syntax.parse.diagnostics);
 
     report.push_str("\n## Resolver Resolution\n\n");
     append_resolver_resolution(

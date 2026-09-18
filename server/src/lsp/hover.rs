@@ -243,7 +243,7 @@ fn hover_report_for_offset(
     let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
         source,
         &analysis.index,
-        &analysis.parse,
+        &analysis.syntax.parse,
         &analysis.scope,
         ExternalIndexes::new(workspace_index, game_data_index).ordered(),
     );

@@ -178,8 +178,8 @@ fn semantic_scope_delimiters_for_analysis_internal(
     should_cancel: Option<&dyn Fn() -> bool>,
 ) -> Option<ScopeDelimiterProjection> {
     let mut delimiters = collect_scope_delimiters(
-        &analysis.parse,
-        &analysis.lexer_tokens,
+        &analysis.syntax.parse,
+        &analysis.syntax.lexer_tokens,
         Some(&analysis.index),
         should_cancel,
     )?;
@@ -189,7 +189,7 @@ fn semantic_scope_delimiters_for_analysis_internal(
         None
     };
     let regions = if cache_context.is_some() {
-        delimiter_reuse_regions(source, &analysis.parse, should_cancel)?
+        delimiter_reuse_regions(source, &analysis.syntax.parse, should_cancel)?
     } else {
         Vec::new()
     };
@@ -222,7 +222,7 @@ fn semantic_scope_delimiters_for_analysis_internal(
     let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
         source,
         &analysis.index,
-        &analysis.parse,
+        &analysis.syntax.parse,
         &analysis.scope,
         external_indexes.ordered(),
     );
@@ -291,7 +291,7 @@ fn semantic_scope_delimiters_for_analysis_internal(
             })
         } else {
             dynamic_owner_resolver_calls += 1;
-            delimiter_anchor_is_proven(&delimiter, &analysis.lexer_tokens, &resolver)
+            delimiter_anchor_is_proven(&delimiter, &analysis.syntax.lexer_tokens, &resolver)
         };
         if let Some(region_index) = region_index {
             region_proofs[region_index].push(is_proven);

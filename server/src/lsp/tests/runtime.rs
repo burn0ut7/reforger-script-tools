@@ -165,7 +165,7 @@ fn one_cpu_foreground_lane_advances_background_only_when_foreground_is_idle() {
 }
 
 #[test]
-fn foreground_executor_tokenizes_source_once() {
+fn foreground_and_semantic_executor_share_syntax_without_retokenizing() {
     let source = "// current snapshot\nclass Fresh { int value; }";
     let mut runtime = AnalysisRuntime::new(AdmissionLimits::new(2, 1024));
     let job = foreground_document_job(
@@ -187,13 +187,31 @@ fn foreground_executor_tokenizes_source_once() {
     executor.execute(RuntimeWorkJob::Foreground(job));
     assert_eq!(crate::lexer::test_lex_call_count() - before, 1);
     let ServerEvent::ForegroundDocumentReady {
-        lexer_tokens, syntax, ..
+        task, syntax, ..
     } = receiver.try_recv().expect("completed foreground result")
     else {
         panic!("foreground analysis did not complete");
     };
-    assert_eq!(lexer_tokens, lex(source));
-    assert_eq!(syntax, parse_source(source));
+    assert_eq!(syntax.lexer_tokens, lex(source));
+    assert_eq!(syntax.parse, parse_source(source));
+    assert!(runtime.complete(&task));
+    let snapshot = runtime.latest("file:///foreground.c").unwrap();
+    assert!(matches!(
+        runtime.admit(TaskClass::Semantic, snapshot, 2),
+        AdmissionDisposition::Enqueued { .. }
+    ));
+    let before = crate::lexer::test_lex_call_count();
+    executor.execute(RuntimeWorkJob::Semantic(OpenDocumentAnalysisJob {
+        task: runtime.take_next().unwrap(),
+        syntax: syntax.clone(),
+        scheduled_at: Instant::now(),
+    }));
+    let ServerEvent::DocumentAnalysisReady { analysis, .. } = receiver.try_recv().unwrap()
+    else {
+        panic!("semantic analysis did not complete");
+    };
+    assert_eq!(crate::lexer::test_lex_call_count(), before);
+    assert!(Arc::ptr_eq(&syntax, &analysis.syntax));
 }
 
 #[test]
@@ -547,10 +565,12 @@ fn document_analysis_scheduler_keeps_only_latest_pending_revision() {
         _ => unreachable!(),
     };
     scheduler.schedule(OpenDocumentAnalysisJob {
+        syntax: Arc::new(open_documents::DocumentSyntax::new(old.snapshot().text())),
         task: old,
         scheduled_at: Instant::now(),
     });
     scheduler.schedule(OpenDocumentAnalysisJob {
+        syntax: Arc::new(open_documents::DocumentSyntax::new(current.snapshot().text())),
         task: current,
         scheduled_at: Instant::now(),
     });

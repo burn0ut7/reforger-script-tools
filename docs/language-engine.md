@@ -71,8 +71,15 @@ model.
 
 When an analysis stage needs both lexical tokens and syntax, it passes the
 complete token stream for that immutable source into the parser. The parser
-borrows those tokens rather than lexing the source again. Foreground and
-semantic stages still have independent scheduling and cancellation lifetimes.
+borrows those tokens rather than lexing the source again. Foreground analysis
+publishes one immutable `DocumentSyntax` containing both tokens and parse. The
+semantic job captures that same allocation from the exact admitted revision;
+it neither lexes nor parses again. Foreground facts and semantic analysis share
+the allocation, including parser diagnostics, until their last owner drops it.
+The stages retain independent scheduling, cancellation, and publication gates.
+Replacing or closing a document cannot publish an older job's syntax. Deferred
+semantic timings report zero parsing time; foreground elapsed time owns that
+cost. Standalone source-analysis reports still include their own parse cost.
 
 Workspace-file notifications build one compiler-owned contribution on the
 incoming path and enqueue it for a coalescing workspace-generation worker.

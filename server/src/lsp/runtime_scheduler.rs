@@ -1,10 +1,10 @@
+use super::open_documents::{file_index_for_syntax, DocumentSyntax};
 use super::semantic_tokens::{
     LspSemanticTokenProjection, RichSemanticProjectionCache, RichSemanticProjectionCacheContext,
 };
 use super::{
     completion_debug_markdown, completion_report_for_cached_analysis_with_external_indexes,
-    debug_hover_report_for_cached_analysis_with_external_indexes,
-    file_index_for_source_with_timings, selected_label_from_debug_report,
+    debug_hover_report_for_cached_analysis_with_external_indexes, selected_label_from_debug_report,
     semantic_tokens_for_cached_analysis_with_external_indexes_incremental_cancelled,
     signature_help_debug_markdown, signature_help_report_for_cached_analysis_with_external_indexes,
     BracketColoringMode, ExternalIndexSnapshot, ExternalIndexStatusSummary, FileIndexAnalysis,
@@ -12,8 +12,7 @@ use super::{
     FOREGROUND_RUNTIME_WORKERS, MAX_BACKGROUND_RUNTIME_WORKERS,
 };
 use crate::analysis_runtime::{AnalysisTask, PositionIndex, TaskClass, TaskIdentity};
-use crate::lexer::{lex, Token};
-use crate::parser::parse_lexed_source;
+use crate::lexer::lex;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
@@ -54,8 +53,7 @@ pub(super) enum ServerEvent {
     ForegroundDocumentReady {
         task: TaskIdentity,
         positions: PositionIndex,
-        lexer_tokens: Vec<Token>,
-        syntax: crate::syntax::Parse,
+        syntax: Arc<DocumentSyntax>,
         elapsed_ms: u128,
     },
     ForegroundDocumentSkipped {
@@ -241,6 +239,7 @@ impl DebugRequestJob {
 
 pub(super) struct OpenDocumentAnalysisJob {
     pub(super) task: AnalysisTask,
+    pub(super) syntax: Arc<DocumentSyntax>,
     pub(super) scheduled_at: Instant,
 }
 
@@ -469,7 +468,10 @@ impl RuntimeWorkExecutor {
                     self.send_skipped(RuntimeWorkJob::Foreground(job), "cancelled-before-syntax");
                     return;
                 }
-                let syntax = parse_lexed_source(job.task.snapshot().text(), &lexer_tokens);
+                let syntax = Arc::new(DocumentSyntax::from_tokens(
+                    job.task.snapshot().text(),
+                    lexer_tokens,
+                ));
                 let event = if job.task.is_cancelled() {
                     ServerEvent::ForegroundDocumentSkipped {
                         task: job.task.identity().clone(),
@@ -480,7 +482,6 @@ impl RuntimeWorkExecutor {
                     ServerEvent::ForegroundDocumentReady {
                         task: job.task.identity().clone(),
                         positions,
-                        lexer_tokens,
                         syntax,
                         elapsed_ms: job.scheduled_at.elapsed().as_millis(),
                     }
@@ -489,7 +490,7 @@ impl RuntimeWorkExecutor {
             }
             RuntimeWorkJob::Semantic(job) => {
                 let (analysis, timings) =
-                    file_index_for_source_with_timings(job.task.snapshot().text());
+                    file_index_for_syntax(job.task.snapshot().text(), job.syntax);
                 let event = if job.task.is_cancelled() {
                     ServerEvent::DocumentAnalysisSkipped {
                         task: job.task.identity().clone(),

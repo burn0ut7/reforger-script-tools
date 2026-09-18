@@ -63,7 +63,12 @@ fn semantic_analysis_job(
         AdmissionDisposition::Enqueued { .. } => runtime.take_next().unwrap(),
         other => panic!("unexpected admission disposition: {other:?}"),
     };
-    OpenDocumentAnalysisJob { task, scheduled_at }
+    let syntax = Arc::new(open_documents::DocumentSyntax::new(task.snapshot().text()));
+    OpenDocumentAnalysisJob {
+        task,
+        syntax,
+        scheduled_at,
+    }
 }
 
 fn foreground_document_job(

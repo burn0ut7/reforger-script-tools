@@ -1,5 +1,9 @@
 // Shared Enfusion language and evidence modules. These do not own a client
 // protocol and may be used by either adapter.
+#[cfg(test)]
+#[path = "../../tools/testing/allocation_counter.rs"]
+mod test_allocations;
+
 pub mod addon_sources;
 mod addon_thumbnail_color;
 pub mod analysis_runtime;

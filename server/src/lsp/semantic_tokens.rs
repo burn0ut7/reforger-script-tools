@@ -515,7 +515,7 @@ fn semantic_raw_tokens(
     should_cancel: Option<&dyn Fn() -> bool>,
 ) -> Option<RawSemanticTokenProjection> {
     let lex_elapsed = Duration::default();
-    let lexer_tokens = &analysis.lexer_tokens;
+    let lexer_tokens = &analysis.syntax.lexer_tokens;
     if should_cancel.is_some_and(|should_cancel| should_cancel()) {
         return None;
     }
@@ -532,7 +532,7 @@ fn semantic_raw_tokens(
     let resolver = ReferenceResolver::new_with_parse_scope_and_external_indexes(
         source,
         &analysis.index,
-        &analysis.parse,
+        &analysis.syntax.parse,
         &analysis.scope,
         ExternalIndexes::new(workspace_index, game_data_index).ordered(),
     );

@@ -112,8 +112,7 @@ pub use hover::{
 use logging::LspLogger;
 pub use open_documents::{file_index_for_source, FileIndexAnalysis};
 pub(crate) use open_documents::{
-    file_index_for_source_with_timings, FileIndexAnalysisTimings, OpenDocument,
-    TokenProjectionKind, TokenResultDisposition,
+    FileIndexAnalysisTimings, OpenDocument, TokenProjectionKind, TokenResultDisposition,
 };
 use request_router::{classify_request, RequestCommand, RoutedRequest};
 use response_writer::RuntimeEffect;

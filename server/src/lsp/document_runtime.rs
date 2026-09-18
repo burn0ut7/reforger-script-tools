@@ -1,5 +1,6 @@
 #[cfg(test)]
 use super::file_path_identity;
+use super::open_documents::{file_index_for_syntax, DocumentSyntax};
 use super::request_router::{RequestCommand, RoutedRequest};
 #[cfg(test)]
 use super::semantic_tokens::LspSemanticTokenProjection;
@@ -10,26 +11,22 @@ use super::semantic_tokens::{
 };
 use super::{
     clear_diagnostics_message, document_symbol_count, document_symbols_from_cached_analysis,
-    file_index_for_source_with_timings, file_uri_path_identity,
-    generic_angle_offsets_for_delimiters, lex,
-    lexical_semantic_tokens_for_source_with_bracket_coloring,
-    publish_diagnostics_message, request_document_uri, AdmissionDisposition, AnalysisTask,
-    BracketColoringMode, DebugRequestJob, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentQuery, ExternalIndexSnapshot, FileIndexAnalysis, FileIndexAnalysisTimings,
-    ForegroundDocumentJob, LspSemanticTokensFull, OpenDocument, OpenDocumentAnalysisJob,
-    PositionIndex, RichSemanticTokensJob, RpcMessage, RuntimeEffect, RuntimeWorkExecutor,
-    ServerEvent, TaskClass, TokenProjectionKind, TokenResultDisposition,
-    MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
+    file_uri_path_identity, generic_angle_offsets_for_delimiters,
+    lexical_semantic_tokens_for_source_with_bracket_coloring, publish_diagnostics_message,
+    request_document_uri, AdmissionDisposition, AnalysisTask, BracketColoringMode, DebugRequestJob,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentQuery, ExternalIndexSnapshot,
+    FileIndexAnalysis, FileIndexAnalysisTimings, ForegroundDocumentJob, LspSemanticTokensFull,
+    OpenDocument, OpenDocumentAnalysisJob, PositionIndex, RichSemanticTokensJob, RpcMessage,
+    RuntimeEffect, RuntimeWorkExecutor, ServerEvent, TaskClass, TokenProjectionKind,
+    TokenResultDisposition, MAX_PENDING_DOCUMENT_REQUESTS_PER_URI,
 };
 use crate::analysis_runtime::{AdmissionLimits, AnalysisRuntime, UpsertOutcome};
-use crate::parser::parse_lexed_source;
 use serde_json::Value;
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::path::Path;
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
-#[cfg(test)]
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -149,12 +146,10 @@ impl DocumentRuntime {
         let snapshot = self.runtime.latest(uri).expect("accepted snapshot");
         let document = self.documents.get_mut(uri).expect("open document");
         document.replace(snapshot.clone());
-        let lexer_tokens = lex(snapshot.text());
-        let syntax = parse_lexed_source(snapshot.text(), &lexer_tokens);
+        let syntax = Arc::new(DocumentSyntax::new(snapshot.text()));
         document.install_foreground(
             snapshot.revision(),
             PositionIndex::new(snapshot.text()),
-            lexer_tokens,
             syntax,
         )
     }
@@ -502,13 +497,11 @@ impl DocumentRuntime {
         } else {
             let snapshot = self.runtime.latest(&uri).expect("accepted snapshot");
             let document = self.documents.get_mut(&uri).expect("open document exists");
-            let lexer_tokens = lex(snapshot.text());
-            let syntax = parse_lexed_source(snapshot.text(), &lexer_tokens);
+            let syntax = Arc::new(DocumentSyntax::new(snapshot.text()));
             assert!(document.install_foreground(
                 revision,
                 PositionIndex::new(snapshot.text()),
-                lexer_tokens,
-                syntax,
+                syntax.clone(),
             ));
             let diagnostics = document
                 .syntax()
@@ -522,7 +515,7 @@ impl DocumentRuntime {
                 &source,
                 &diagnostics,
             )));
-            let (analysis, timings) = file_index_for_source_with_timings(snapshot.text());
+            let (analysis, timings) = file_index_for_syntax(snapshot.text(), syntax);
             effects.push(runtime_log!(self, format!(
                 "notification didChange uri={} bytes={} version={} revision={} cached_analysis=true document_symbols_cached=false symbols=pending parse_diagnostics={} analysis_parse_ms={} analysis_catalog_ms={} analysis_index_ms={} analysis_scope_ms={} analysis_build_ms={} queue_ms={} coalesced_changes={} superseded_changes={} analysis_elapsed_ms={}",
                 uri, bytes, version, revision, analysis.parse_diagnostics, timings.parse_ms,
@@ -715,7 +708,6 @@ impl DocumentRuntime {
         let ServerEvent::ForegroundDocumentReady {
             task,
             positions,
-            lexer_tokens,
             syntax,
             elapsed_ms,
         } = event
@@ -736,7 +728,7 @@ impl DocumentRuntime {
         let Some(document) = self.documents.get_mut(task.uri()) else {
             return Some(Vec::new());
         };
-        if !document.install_foreground(task.revision(), positions, lexer_tokens, syntax) {
+        if !document.install_foreground(task.revision(), positions, syntax) {
             return Some(vec![runtime_log!(
                 self,
                 format!(
@@ -787,6 +779,10 @@ impl DocumentRuntime {
             return Vec::new();
         }
         let snapshot = document.snapshot.clone();
+        let syntax = document
+            .syntax_snapshot()
+            .expect("foreground owns syntax")
+            .clone();
         let request_id = self.next_server_request_id;
         self.next_server_request_id += 1;
         match self
@@ -794,6 +790,7 @@ impl DocumentRuntime {
             .admit(TaskClass::Semantic, snapshot, request_id)
         {
             AdmissionDisposition::Enqueued { .. } => scheduler.schedule(OpenDocumentAnalysisJob {
+                syntax,
                 task: self
                     .runtime
                     .take_next()
