@@ -593,6 +593,52 @@ fn exact_symbol_aliases_preserve_generic_results_errors_and_cursors() {
 }
 
 #[test]
+fn bounded_source_previews_preserve_raw_evidence_for_both_authorities() {
+    let fixture = TempFixture::new("source_preview");
+    let game_root = fixture.path().join("game-data/Scripts");
+    let workspace_root = fixture.path().join("workspace/Scripts");
+    let source = "/* Header\r\n continued 😀 */ class PreviewFixture { string url = \"https://example.test\"; } // note\r\n";
+    for root in [&game_root, &workspace_root] {
+        fs::create_dir_all(root).unwrap();
+        fs::write(root.join("Preview.c"), source).unwrap();
+    }
+    let game_data = build_game_data_cache(&game_root, &fixture.path().join("cache/index.bin"));
+    let mut arguments = game_data.arguments;
+    arguments.extend(["--workspace-scripts".to_string(), workspace_root.to_string_lossy().into_owned()]);
+    let mut client = McpClient::spawn_owned(&arguments);
+    client.initialize(1);
+    let mut id = 1;
+    for prefix in ["game_data", "workspace"] {
+        id += 1;
+        client.send(json!({"jsonrpc":"2.0", "id":id, "method":"tools/call", "params":{"name":format!("search_{prefix}_symbols"), "arguments":{"query":"PreviewFixture", "kinds":["class"]}}}));
+        let search = client.response(id);
+        let mut input = search.pointer("/result/structuredContent/results/0/readSourceInput").unwrap().clone();
+        input["startLine"] = json!(2);
+        input["lineCount"] = json!(1);
+        for include_preview in [false, true] {
+            input["includePreview"] = json!(include_preview);
+            id += 1;
+            client.send(json!({"jsonrpc":"2.0", "id":id, "method":"tools/call", "params":{"name":format!("read_{prefix}_source"), "arguments":input}}));
+            let response = client.response(id);
+            assert_eq!(response.pointer("/result/isError"), Some(&json!(false)), "{response}");
+            let read = response.pointer("/result/structuredContent").unwrap();
+            assert_eq!(read["content"], source.split_once('\n').unwrap().1);
+            assert_eq!(read["startLine"], 2);
+            assert_eq!(read["endLine"], 2);
+            if include_preview {
+                let preview = read["previewContent"].as_str().unwrap();
+                assert_eq!(preview.trim(), "class PreviewFixture { string url = \"https://example.test\"; }");
+                assert_eq!(preview.encode_utf16().count(), read["content"].as_str().unwrap().encode_utf16().count());
+            } else {
+                assert!(read.get("previewContent").is_none());
+            }
+        }
+    }
+    client.close_stdin();
+    assert!(client.wait_for_exit(Duration::from_secs(3)));
+}
+
+#[test]
 fn authoring_profile_exposes_one_concise_search_surface() {
     let mut client = McpClient::spawn(&["mcp", "--tool-profile", "authoring"]);
     let initialize = client.initialize(1);

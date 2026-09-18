@@ -5,8 +5,8 @@ import * as vm from 'node:vm';
 import * as vscode from 'vscode';
 import { languageClientDocumentSelector, languageClientSchemes } from '../extensionConfig/languageClient';
 import { searchLimits } from '../extensionConfig/search';
-import { addonScopeLabel, asThumbnailColor, formatSearchKind, maxSearchPages, McpToolError, normalizeResourceSearchPage, normalizeSearchPage, normalizeSourceRelationshipPage, normalizeWorkbenchProjectContext, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceContextPreview, sourceLinePreview, sourceMatchRange, sourcePreviewLine, stripSourceComments, type SearchHit } from '../searchPrototype/mcpSearchClient';
-import { semanticPreviewForLine, semanticPreviewForLines, semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
+import { addonScopeLabel, asThumbnailColor, formatSearchKind, maxSearchPages, McpToolError, normalizeResourceSearchPage, normalizeSearchPage, normalizeSourceRelationshipPage, normalizeWorkbenchProjectContext, resourceKindsFor, searchKindFilters, searchResourceKindFilters, searchToolFor, sourceContextPreview, sourceLinePreview, sourceMatchRange, sourcePreviewLine, type SearchHit } from '../searchPrototype/mcpSearchClient';
+import { semanticPreviewForLine, semanticPreviewForLines, semanticPreviewSourceLine, semanticTokenSpansForLine } from '../searchPrototype/semanticPreview';
 import { localWorkbenchResourceLinkFor, openSearchSourceDocument, queueSearchScopeRefresh, renderSearchUiForTest, resourceAddonIsLoaded, resourcePathForClipboard, resourcePhysicalPathFor, searchDocumentContentProvider, workbenchResourceOpenState } from '../searchPrototype/searchUiPrototype';
 
 const searchUiSource = fs.readFileSync(
@@ -325,10 +325,13 @@ suite('Reforger search UI MCP mapping', () => {
 	});
 
 	test('anchors previews to the declaration and removes comments', () => {
-		const document = { content: '// field documentation\n    SCR_Field value; // trailing note\n', startLine: 10, endLine: 11 };
+		const document = { content: '// field documentation\n    SCR_Field value; // trailing note\n', previewContent: '                      \n    SCR_Field value;                 \n', startLine: 10, endLine: 11 };
 		assert.strictEqual(sourcePreviewLine(document, 10, 'SCR_Field'), 11);
 		assert.strictEqual(sourceLinePreview(document, 10, 'SCR_Field'), 'SCR_Field value;');
-		assert.strictEqual(stripSourceComments('const url = "https://example.test"; // note'), 'const url = "https://example.test"; ');
+		const text = 'const url = "https://example.test"; // note';
+		const tokens = [{ start: text.lastIndexOf('//'), length: 7, role: 'comment' }];
+		assert.strictEqual(semanticPreviewSourceLine(text, tokens).trimEnd(), 'const url = "https://example.test";');
+		assert.strictEqual(semanticPreviewSourceLine(text, tokens, true), text);
 	});
 
 	test('finds the selected symbol occurrence instead of every query occurrence', () => {
@@ -355,6 +358,24 @@ suite('Reforger search UI MCP mapping', () => {
 		assert.match(searchUiSource, /line \+ active\.previewContextLines/);
 		assert.strictEqual(typeof semanticPreviewForLine, 'function');
 		assert.strictEqual(typeof semanticPreviewForLines, 'function');
+	});
+
+	test('projects multi-line comment facts without shifting following semantic tokens', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'plaintext', content: '/* 😀\nstill */ int value;' });
+		const tokens = new vscode.SemanticTokens(new Uint32Array([
+			0, 0, 5, 9, 0,
+			1, 0, 8, 9, 0,
+			0, 9, 3, 8, 0,
+			0, 4, 5, 5, 0,
+		]));
+		const preview = semanticPreviewForLines(document, tokens, 0, 1);
+		assert.strictEqual(preview?.text, '\n         int value;');
+		assert.deepStrictEqual(preview?.tokens.map(token => [token.start, token.length, token.role]), [
+			[10, 3, 'keyword'], [14, 5, 'variable'],
+		]);
+		const evidence = semanticPreviewForLines(document, tokens, 0, 1, true);
+		assert.strictEqual(evidence?.text, document.getText());
+		assert.ok(evidence?.tokens.some(token => token.role === 'comment'));
 	});
 
 	test('defines useful symbol kind filters without a documentation duplicate', () => {

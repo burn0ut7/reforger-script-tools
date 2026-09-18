@@ -19,7 +19,7 @@ import {
 import { discoverWorkspaceProjectFiles, discoverWorkspaceScriptRoots } from '../languageClient/workspaceWatchBridge';
 import { resolveLanguageServerPath } from '../languageClient/serverPath';
 import { readExternalIndexMode } from '../mcp/mcpConfiguration';
-import { semanticPreviewForLine, semanticPreviewForLines, type SemanticPreview } from './semanticPreview';
+import { semanticPreviewForLine, semanticPreviewForLines, semanticPreviewSourceLine, semanticTokenSpansForLine, type SemanticPreview } from './semanticPreview';
 import {
 	McpSearchClient,
 	McpToolError,
@@ -31,7 +31,6 @@ import {
 	sourceContextPreview,
 	sourcePreviewLine,
 	sourceMatchRange,
-	stripSourceComments,
 	type SearchDocument,
 	type SearchHit,
 	type SearchRelationshipKind,
@@ -827,6 +826,7 @@ async function hydrateSearchPreviews(
 						if (autoContext) {
 							preview = sourceDocumentRangePreview(
 								semanticDocument.document,
+								semanticDocument.semanticTokens,
 								autoContext.startLine,
 								autoContext.endLine,
 								hit.kind === 'text',
@@ -915,6 +915,7 @@ async function hydrateSearchPreviews(
 
 function sourceDocumentRangePreview(
 	document: vscode.TextDocument,
+	semanticTokens: vscode.SemanticTokens,
 	startLine: number,
 	endLine: number,
 	preserveComments: boolean,
@@ -922,7 +923,7 @@ function sourceDocumentRangePreview(
 	const lines: string[] = [];
 	for (let line = startLine; line <= endLine; line += 1) {
 		const text = document.lineAt(line).text;
-		lines.push((preserveComments ? text : stripSourceComments(text)).trimEnd());
+		lines.push(semanticPreviewSourceLine(text, semanticTokenSpansForLine(semanticTokens.data, line), preserveComments).trimEnd());
 	}
 	return lines.join('\n');
 }

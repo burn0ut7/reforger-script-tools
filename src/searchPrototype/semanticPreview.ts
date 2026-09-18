@@ -4,7 +4,6 @@ import {
 	semanticTokenTypes,
 	type HoverSemanticForegrounds,
 } from '../languageClient/hoverSemanticPalette';
-import { stripSourceComments } from './mcpSearchClient';
 
 export interface SemanticPreviewToken {
 	start: number;
@@ -17,6 +16,29 @@ export interface SemanticPreview {
 	tokens: SemanticPreviewToken[];
 	foregrounds: HoverSemanticForegrounds;
 	enabled: boolean;
+}
+
+/** Masks Rust-classified comments without changing UTF-16 token coordinates. */
+export function semanticPreviewSourceLine(
+	text: string,
+	tokens: readonly SemanticPreviewToken[],
+	preserveComments = false,
+): string {
+	if (preserveComments) {
+		return text;
+	}
+	let result = text;
+	for (const token of tokens) {
+		if (token.role !== 'comment') {
+			continue;
+		}
+		const start = Math.max(0, token.start);
+		const end = Math.min(text.length, token.start + token.length);
+		if (end > start) {
+			result = result.slice(0, start) + result.slice(start, end).replace(/[^\t]/g, ' ') + result.slice(end);
+		}
+	}
+	return result;
 }
 
 /** Decodes the LSP delta-encoded semantic token stream for one document line. */
@@ -55,10 +77,12 @@ export function semanticPreviewForLine(
 		return undefined;
 	}
 	const documentLine = document.lineAt(targetLine).text;
-	const sourceText = preserveComments ? documentLine : stripSourceComments(documentLine);
+	const spans = semanticTokenSpansForLine(semanticTokens.data, targetLine);
+	const sourceText = semanticPreviewSourceLine(documentLine, spans, preserveComments);
 	const leadingWhitespace = sourceText.length - sourceText.trimStart().length;
 	const text = sourceText.slice(leadingWhitespace).trimEnd();
-	const tokens = semanticTokenSpansForLine(semanticTokens.data, targetLine)
+	const tokens = spans
+		.filter(token => preserveComments || token.role !== 'comment')
 		.map(token => ({
 			...token,
 			start: token.start - leadingWhitespace,
@@ -98,10 +122,12 @@ export function semanticPreviewForLines(
 	const tokens: SemanticPreviewToken[] = [];
 	for (let line = first; line <= last; line += 1) {
 		const documentLine = document.lineAt(line).text;
-		const sourceText = preserveComments ? documentLine : stripSourceComments(documentLine);
+		const spans = semanticTokenSpansForLine(semanticTokens.data, line);
+		const sourceText = semanticPreviewSourceLine(documentLine, spans, preserveComments);
 		const text = sourceText.trimEnd();
 		textLines.push(text);
-		tokens.push(...semanticTokenSpansForLine(semanticTokens.data, line)
+		tokens.push(...spans
+			.filter(token => preserveComments || token.role !== 'comment')
 			.map(token => ({ ...token, start: offset + token.start }))
 			.map(token => ({ ...token, length: Math.min(token.length, offset + text.length - token.start) }))
 			.filter(token => token.start >= offset && token.length > 0 && token.start < offset + text.length));

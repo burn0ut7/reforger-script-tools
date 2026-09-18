@@ -33,7 +33,8 @@ an implementation priority. Commit and push coherent verified slices on `MCP`.
 | 5. Cache metadata | Verified: retained compact/repair formats, removed unreachable decode, corrected cache-only provenance. Build and 1,058 Rust tests pass; first-navigation measurement follows the priority 6 report repair. |
 | 6. Compatibility tools | Completed: shared dispatch, unchanged contracts, current report coverage; build, 1,059 Rust tests, API check, and five report tests pass. Real-cache navigation correctly rejects a changed pack. |
 | 7. Search UI caching/lifecycle | Completed: shared cache setup/session cleanup; build, four direct client tests, and 209 editor tests pass; measured page reuse retained. |
-| 8–9. Remaining architecture priorities | Workbench acceptance awaits a live endpoint; preview ownership review follows. |
+| 8. Workbench ownership | Public launch now reached through the existing stdio test client, but Windows rejected process creation; diagnosis and live acceptance remain pending. |
+| 9. Preview ownership | Completed: Rust lexical projection and existing semantic spans replace the TypeScript scanner; 1,063 Rust tests, five direct client tests, five report tests, and 210 editor tests pass. |
 | Clean-window MCP activation | Completed: native discovery readiness race fixed in acceptance; three consecutive isolated-window runs and lint pass. |
 | Final acceptance | Full Rust/extension/package checks and feasible live Workbench acceptance. |
 
@@ -514,6 +515,39 @@ migration until supported upgrade/recovery cases can be preserved another way.
 The unavailable live endpoint prevented acceptance of such a refactor here.
 
 ## 9. Remove handwritten comment parsing from Search previews
+
+**Completed:** Rich previews mask the comment spans already supplied by Rust.
+Bounded symbol reads request an optional `previewContent` projection in their
+existing MCP response. The shared Rust lexer scans only through the returned
+range, retaining earlier multiline state. Raw `content`, complete-document
+reads, text-match evidence, and Wiki content remain intact. No request, parser,
+semantic job, or mutable cache was added. The TypeScript quote/comment scanner
+was deleted; masking preserves UTF-16 columns for subsequent semantic tokens.
+
+**Measured cost:** The 25-row first-page profile uses eight concurrent readers
+and one 323,121-byte synthetic source, with seven measured fresh-process samples
+per mode. Median first-row latency was 4.79 / 6.29 ms and whole-page latency
+17.36 / 24.07 ms without / with the projection. Both modes made exactly 25
+source reads. This is a small measured CPU cost, not a performance improvement
+or a full editor latency claim; initial indexing and rich hydration are excluded.
+A separate Rust microprofile measured 1 / 1,951 microseconds for a 75-byte
+returned range after a 75 / 308,000-byte prefix. Evidence:
+`.cache/reports/review-preview-{page-profile.json,profile.log}`.
+
+Tests cover multiline comments beginning before the read window, strings and
+escaped quotes, malformed source, CRLF, supplementary Unicode characters,
+cancellation, both real MCP source authorities, raw-text preservation, and
+semantic-token positioning. Build and generated API checks pass, as do all
+1,063 Rust tests (two opt-in profiles ignored), five direct client checks, and
+five report checks. The editor run first timed out in an unchanged compiler
+test at its two-second Mocha deadline; an unchanged rerun passed all 210 tests.
+Logs: `.cache/reports/review-preview-*-final.log` and
+`.cache/reports/review-preview-editor-repeat.log`. Primary syntax evidence:
+packaged `Scripting Values` lines 195–217, existing game-data-derived lexer
+fixtures, and the Rust lexer's existing comment/string token contract. No new
+engine API or language classification rule was introduced.
+
+The original investigation below records the problem and acceptance rationale.
 
 **Files:** `src/searchPrototype/mcpSearchClient.ts::{stripSourceComments,
 sourcePreviewLine,sourceContextPreview}`, `src/searchPrototype/semanticPreview.ts`,

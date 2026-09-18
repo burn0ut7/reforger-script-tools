@@ -275,6 +275,14 @@ from the complete document; Official Wiki text remains Markdown evidence and
 does not enter that semantic pipeline. Workspace remains a separate live
 source, while Official Wiki is eligible only for explicit text search in the
 editor UI.
+Symbol previews request the optional `includePreview` projection on their
+existing bounded source read. Rust masks comments using its lexer, including
+block comments that began before the returned range, while leaving the raw
+`content` evidence unchanged. Rich previews use the already-returned semantic
+comment spans. TypeScript only trims and presents these facts; it has no
+comment/string scanner. Text matches, complete document reads, and Wiki reads
+retain raw content. The projection adds no request, parse, or semantic job;
+its prefix-lexing cost is measured separately from ordinary evidence reads.
 Semantic Related Code remains inside that existing Search page and result
 pipeline. TypeScript preserves the exact discovery result as an anchor and
 transports scope, relationship kinds, depth, result kinds, page size, and cursor

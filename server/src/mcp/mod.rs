@@ -1285,6 +1285,11 @@ struct McpGameDataSourceInput {
     relative_path: String,
     start_line: Option<usize>,
     line_count: Option<usize>,
+    #[serde(default)]
+    #[schemars(
+        description = "Also return a preview with lexer-classified comments masked, preserving line breaks and UTF-16 columns. Raw content is unchanged."
+    )]
+    include_preview: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1296,6 +1301,11 @@ struct McpWorkspaceSourceInput {
     relative_path: String,
     start_line: Option<usize>,
     line_count: Option<usize>,
+    #[serde(default)]
+    #[schemars(
+        description = "Also return a preview with lexer-classified comments masked, preserving line breaks and UTF-16 columns. Raw content is unchanged."
+    )]
+    include_preview: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1332,6 +1342,7 @@ struct McpSourceReadOutputSchema {
     start_line: usize,
     end_line: usize,
     content: String,
+    preview_content: Option<String>,
     truncated: bool,
     next_start_line: Option<usize>,
 }
@@ -1346,6 +1357,7 @@ struct McpGameDataSourceReadOutputSchema {
     start_line: usize,
     end_line: usize,
     content: String,
+    preview_content: Option<String>,
     truncated: bool,
     next_start_line: Option<usize>,
 }
@@ -3378,6 +3390,7 @@ impl ReforgerMcpServer {
                         catalogue_revision: input.catalogue_revision,
                         addon_guid: None,
                         relative_path: input.relative_path,
+                        include_preview: input.include_preview,
                         start_line: input.start_line,
                         line_count: input.line_count,
                     },
@@ -4846,6 +4859,7 @@ impl ReforgerMcpServer {
                         catalogue_revision: input.catalogue_revision,
                         addon_guid: Some(input.addon_guid),
                         relative_path: input.relative_path,
+                        include_preview: input.include_preview,
                         start_line: input.start_line,
                         line_count: input.line_count,
                     },

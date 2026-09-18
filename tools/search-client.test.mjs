@@ -107,3 +107,21 @@ test('a stale text cursor rebuilds its chain once and preserves requested paging
 	assert.deepEqual(offsets, [0, 100, 0, 100]);
 	client.dispose();
 });
+
+test('bounded symbol preview uses the existing source read and preserves raw evidence', async () => {
+	const { McpSearchClient, sourceLinePreview } = await loadSearchClient();
+	const client = new McpSearchClient({});
+	client.start = async () => {};
+	const calls = [];
+	client.callTool = async (name, input) => {
+		calls.push({ name, input });
+		return { content: 'comment */ int value; // note', previewContent: '           int value;        ', startLine: 12, endLine: 12 };
+	};
+	const result = await client.read({ source: 'workspace', kind: 'symbol', selectionStartLine: 12, readInput: { relativePath: 'Fixture.c', catalogueRevision: 'one' } }, 1);
+	assert.equal(calls.length, 1, 'preview projection adds no request');
+	assert.equal(calls[0].input.includePreview, true);
+	assert.equal(calls[0].input.lineCount, 1);
+	assert.equal(result.content, 'comment */ int value; // note');
+	assert.equal(sourceLinePreview(result, 12), 'int value;');
+	client.dispose();
+});

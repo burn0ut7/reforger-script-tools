@@ -240,6 +240,7 @@ export interface SearchPerformance {
 
 export interface SearchDocument {
 	content: string;
+	previewContent?: string;
 	startLine: number;
 	endLine: number;
 }
@@ -267,7 +268,7 @@ export function sourcePreviewLine(
 	line: number | undefined,
 	needle?: string,
 ): number {
-	const lines = document.content.split(/\r?\n/);
+	const lines = (document.previewContent ?? document.content).split(/\r?\n/);
 	const startLine = document.startLine > 0 ? document.startLine : line ?? 1;
 	const requestedIndex = Math.max(0, Math.min(lines.length - 1, (line ?? startLine) - startLine));
 	const candidateIndexes = [
@@ -277,12 +278,12 @@ export function sourcePreviewLine(
 	const normalizedNeedle = needle?.trim().toLowerCase();
 	const matchingIndex = normalizedNeedle
 		? candidateIndexes.find(index => {
-			const value = stripSourceComments(lines[index] ?? '');
+			const value = (lines[index] ?? '');
 			return value.trim().length > 0 && value.toLowerCase().includes(normalizedNeedle);
 		})
 		: undefined;
 	const contentIndex = matchingIndex
-		?? candidateIndexes.find(index => stripSourceComments(lines[index] ?? '').trim().length > 0)
+		?? candidateIndexes.find(index => (lines[index] ?? '').trim().length > 0)
 		?? requestedIndex;
 	return startLine + contentIndex;
 }
@@ -292,11 +293,11 @@ export function sourceLinePreview(
 	line: number | undefined,
 	needle?: string,
 ): string {
-	const lines = document.content.split(/\r?\n/);
+	const lines = (document.previewContent ?? document.content).split(/\r?\n/);
 	const startLine = document.startLine > 0 ? document.startLine : line ?? 1;
 	const selectedLine = sourcePreviewLine(document, line, needle);
 	const lineIndex = Math.max(0, selectedLine - startLine);
-	return stripSourceComments(lines[lineIndex] ?? lines[0] ?? '').trimStart().trimEnd();
+	return (lines[lineIndex] ?? lines[0] ?? '').trimStart().trimEnd();
 }
 
 export function sourceContextPreview(
@@ -305,60 +306,18 @@ export function sourceContextPreview(
 	contextLines: number,
 	needle?: string,
 ): string {
-	const lines = document.content.split(/\r?\n/);
+	const lines = (document.previewContent ?? document.content).split(/\r?\n/);
 	const startLine = document.startLine > 0 ? document.startLine : line ?? 1;
 	const selectedLine = sourcePreviewLine(document, line, needle);
 	if (contextLines <= 1) {
 		const lineIndex = Math.max(0, selectedLine - startLine);
-		return stripSourceComments(lines[lineIndex] ?? lines[0] ?? '').trimStart().trimEnd();
+		return (lines[lineIndex] ?? lines[0] ?? '').trimStart().trimEnd();
 	}
 	const selectedIndex = Math.max(0, selectedLine - startLine);
 	const context = Math.max(1, Math.min(249, Math.floor(contextLines)));
 	const first = Math.max(0, selectedIndex - context);
 	const last = Math.min(lines.length, selectedIndex + context + 1);
-	return lines.slice(first, last).map(value => stripSourceComments(value).trimEnd()).join('\n');
-}
-
-/** Removes comments while preserving quoted strings. */
-export function stripSourceComments(value: string): string {
-	let result = '';
-	let quote: '"' | "'" | undefined;
-	let escaped = false;
-	let blockComment = false;
-	for (let index = 0; index < value.length; index += 1) {
-		const character = value[index];
-		const next = value[index + 1];
-		if (blockComment) {
-			if (character === '*' && next === '/') {
-				blockComment = false;
-				index += 1;
-			}
-			continue;
-		}
-		if (quote) {
-			result += character;
-			if (escaped) {
-				escaped = false;
-			} else if (character === '\\') {
-				escaped = true;
-			} else if (character === quote) {
-				quote = undefined;
-			}
-			continue;
-		}
-		if (character === '"' || character === "'") {
-			quote = character;
-			result += character;
-		} else if (character === '/' && next === '/') {
-			break;
-		} else if (character === '/' && next === '*') {
-			blockComment = true;
-			index += 1;
-		} else {
-			result += character;
-		}
-	}
-	return result;
+	return lines.slice(first, last).map(value => value.trimEnd()).join('\n');
 }
 
 export interface SourceMatchRange {
@@ -802,10 +761,14 @@ export class McpSearchClient {
 		const input = selectedLine === undefined || context === 0
 			? hit.readInput
 			: { ...hit.readInput, startLine: Math.max(1, selectedLine - radius), lineCount: radius * 2 + 1 };
-		const value = await this.callTool(tool, input);
+		const value = await this.callTool(tool, {
+			...input,
+			...(hit.source !== 'wiki' && hit.kind !== 'text' ? { includePreview: true } : {}),
+		});
 		const record = asRecord(value);
 		return {
 			content: asString(record.content, 'The source read returned no content.'),
+			...(typeof record.previewContent === 'string' ? { previewContent: record.previewContent } : {}),
 			startLine: asNumber(record.startLine, 0),
 			endLine: asNumber(record.endLine, 0),
 		};

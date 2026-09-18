@@ -564,6 +564,7 @@ async function runScenarios(runner) {
 	}
 	if (gameResult?.readSourceInput) {
 		await runner.exercise('read_game_data_source', gameResult.readSourceInput);
+		await runner.variant('read_game_data_source', { ...gameResult.readSourceInput, includePreview: true }, 'lexical-preview');
 		const researchReadInput = gameResearch?.primary?.readSourceInput;
 		if (researchReadInput) await runner.variant('read_game_data_source', researchReadInput, 'research-handoff');
 	} else if (gameResearch?.primary?.readSourceInput) {
@@ -614,6 +615,7 @@ async function runScenarios(runner) {
 	}
 	if (workspaceResult?.readSourceInput) {
 		await runner.exercise('read_workspace_source', workspaceResult.readSourceInput);
+		await runner.variant('read_workspace_source', { ...workspaceResult.readSourceInput, includePreview: true }, 'lexical-preview');
 	} else {
 		runner.skip('read_workspace_source', workspaceAvailable ? 'The configured workspace symbol query returned no source-read handoff.' : 'Workspace source is unavailable.');
 	}

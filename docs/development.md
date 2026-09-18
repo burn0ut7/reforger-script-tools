@@ -143,6 +143,15 @@ collection for 40 synthetic queries with 40 pages of 100 results, plus revisited
 page latency and remote request count. It preserves the production cache limits;
 its client-only timings are not real-server or editor latency measurements.
 
+`node tools/search-preview-profile.mjs <server-executable>` measures the actual
+Search client and MCP source-read path with and without the optional lexical
+preview. It reads 25 rows spread across one synthetic 4,000-line source through
+eight parallel readers, alternating mode order in fresh server processes and
+discarding one warmup per mode. The report records first-row and whole-page
+latency and verifies the unchanged request count. Initial indexing and rich
+editor hydration are outside this measurement. The MCP runtime report also
+includes opt-in lexical-preview variants for both source authorities.
+
 To reproduce full-text search performance through the real MCP stdio path, run
 one of:
 

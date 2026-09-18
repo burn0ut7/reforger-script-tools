@@ -27,6 +27,11 @@ Read bounded source evidence from an exact logical user add-on workspace path re
       "minLength": 1,
       "type": "string"
     },
+    "includePreview": {
+      "default": false,
+      "description": "Also return a preview with lexer-classified comments masked, preserving line breaks and UTF-16 columns. Raw content is unchanged.",
+      "type": "boolean"
+    },
     "lineCount": {
       "minimum": 0,
       "type": [
@@ -75,6 +80,12 @@ Read bounded source evidence from an exact logical user add-on workspace path re
       "minimum": 0,
       "type": [
         "integer",
+        "null"
+      ]
+    },
+    "previewContent": {
+      "type": [
+        "string",
         "null"
       ]
     },

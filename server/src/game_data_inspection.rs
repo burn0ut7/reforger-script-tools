@@ -5,6 +5,7 @@ use crate::game_data_search::{
 };
 use crate::index::{GlobalSymbolId, SourceFileId, SymbolIndex};
 use crate::index_build::IndexBuildControl;
+use crate::lexer::{lex_with_control, TokenKind};
 use crate::symbol_display::documentation_display;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -39,6 +40,7 @@ pub struct GameDataSourceReadRequest {
     pub relative_path: String,
     pub start_line: Option<usize>,
     pub line_count: Option<usize>,
+    pub include_preview: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -367,9 +369,61 @@ pub fn read_source(
         start + taken - 1
     };
     let truncated = end < all.len();
-    Ok(
-        json!({"catalogueRevision": revision, "addonGuid": request.addon_guid, "relativePath": request.relative_path, "startLine": start, "endLine": end, "content": content, "truncated": truncated, "nextStartLine": truncated.then_some(end + 1)}),
-    )
+    let preview = if request.include_preview {
+        let byte_start = all.iter().take(start - 1).map(|line| line.len()).sum();
+        Some(source_preview_content(
+            source,
+            byte_start,
+            content.len(),
+            control,
+        )?)
+    } else {
+        None
+    };
+    let mut result = json!({"catalogueRevision": revision, "addonGuid": request.addon_guid, "relativePath": request.relative_path, "startLine": start, "endLine": end, "content": content, "truncated": truncated, "nextStartLine": truncated.then_some(end + 1)});
+    if let Some(preview) = preview {
+        result["previewContent"] = Value::String(preview);
+    }
+    Ok(result)
+}
+
+// Lex only through the requested range, retaining comment state from earlier
+// lines. Masking preserves UTF-16 columns and line breaks for editor tokens.
+fn source_preview_content(
+    source: &str,
+    start: usize,
+    length: usize,
+    control: &IndexBuildControl,
+) -> Result<String, GameDataInspectionError> {
+    let end = start + length;
+    let tokens = lex_with_control(&source[..end], || control.check())
+        .map_err(|_| GameDataInspectionError::Cancelled)?;
+    let mut output = String::with_capacity(length);
+    let mut offset = start;
+    for token in tokens {
+        if !matches!(
+            token.kind,
+            TokenKind::LineComment
+                | TokenKind::DocLineComment
+                | TokenKind::BlockComment
+                | TokenKind::DocBlockComment
+                | TokenKind::UnterminatedBlockComment
+        ) || token.span.end <= start
+        {
+            continue;
+        }
+        let comment_start = token.span.start.max(start);
+        output.push_str(&source[offset..comment_start]);
+        for character in source[comment_start..token.span.end].chars() {
+            match character {
+                '\r' | '\n' | '\t' => output.push(character),
+                _ => output.extend(std::iter::repeat_n(' ', character.len_utf16())),
+            }
+        }
+        offset = token.span.end;
+    }
+    output.push_str(&source[offset..end]);
+    Ok(output)
 }
 
 fn bounded(value: String, max: usize) -> (String, bool) {
@@ -381,4 +435,85 @@ fn bounded(value: String, max: usize) -> (String, bool) {
         end -= 1
     }
     (value[..end].to_string(), true)
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_preview_keeps_comment_state_from_before_the_window() {
+        let source = "/* comment begins\r\n😀 continued */ int value; // trailing\r\nstring url = \"https://example.test/*path*/\";\r\n";
+        let start = source.find('😀').unwrap();
+        let result = source_preview_content(
+            source,
+            start,
+            source.len() - start,
+            &IndexBuildControl::default(),
+        )
+        .unwrap();
+        let lines = result.lines().collect::<Vec<_>>();
+        assert_eq!(lines[0].trim(), "int value;");
+        assert_eq!(lines[1], "string url = \"https://example.test/*path*/\";");
+        assert_eq!(
+            result.encode_utf16().count(),
+            source[start..].encode_utf16().count()
+        );
+        assert!(result.contains("\r\n"));
+    }
+
+    #[test]
+    fn previews_preserve_escaped_strings_and_mask_unterminated_comments() {
+        let source = "string value = \"quote: \\\" // string\"; /* unterminated\n still a comment";
+        let result =
+            source_preview_content(source, 0, source.len(), &IndexBuildControl::default()).unwrap();
+        assert_eq!(
+            result.lines().next().unwrap().trim_end(),
+            "string value = \"quote: \\\" // string\";"
+        );
+        assert!(result.lines().nth(1).unwrap().trim().is_empty());
+        assert_eq!(result.encode_utf16().count(), source.encode_utf16().count());
+    }
+
+    #[test]
+    fn preview_lexing_stops_at_the_bounded_read_and_honors_cancellation() {
+        let source = "int value;\n/* unfinished beyond the returned window";
+        assert_eq!(
+            source_preview_content(source, 0, 11, &IndexBuildControl::default()).unwrap(),
+            "int value;\n"
+        );
+        let control = IndexBuildControl::default();
+        control.cancel();
+        assert!(matches!(
+            source_preview_content(source, 0, 11, &control),
+            Err(GameDataInspectionError::Cancelled)
+        ));
+    }
+
+    #[test]
+    #[ignore = "manual bounded-preview timing profile"]
+    fn profile_bounded_preview_projection() {
+        let source =
+            "class Example { string url = \"https://example.test\"; /* note */ int value; }\n"
+                .repeat(4000);
+        for start in [0, source.len() - 75] {
+            let mut samples = (0..8)
+                .map(|_| {
+                    let begin = std::time::Instant::now();
+                    let result =
+                        source_preview_content(&source, start, 75, &IndexBuildControl::default())
+                            .unwrap();
+                    std::hint::black_box(result);
+                    begin.elapsed().as_micros()
+                })
+                .collect::<Vec<_>>();
+            samples.remove(0);
+            samples.sort_unstable();
+            println!(
+                "preview prefix_bytes={} returned_bytes=75 median_us={}",
+                start + 75,
+                samples[3]
+            );
+        }
+    }
 }

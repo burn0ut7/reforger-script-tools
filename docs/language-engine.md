@@ -51,6 +51,13 @@ other value declarations remain one line, while callable and type scopes may
 expand to at most 80 lines around the match. The TypeScript shell requests that
 range and renders it, while explicit numeric context remains a presentation
 control.
+Preview comment classification also belongs to Rust. Bounded MCP source reads
+can opt into `previewContent`, which preserves line breaks and UTF-16 columns
+while masking lexer-classified comments. Lexing includes the preceding source
+prefix to preserve multiline state and stops at the returned range; it performs
+no parse or semantic analysis. The ordinary raw `content` field is unchanged.
+Rich editor previews project existing semantic comment spans using the same
+coordinate convention, so removing a comment cannot shift later token colors.
 The fixed collection type names `array`, `set`, and `map` retain their class
 role in type positions even when no external index is available; other
 source-backed class names still require indexed facts.

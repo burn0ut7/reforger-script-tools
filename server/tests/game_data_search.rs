@@ -419,6 +419,7 @@ fn catalogue_source_read_returns_the_authoritative_source_line() {
                 relative_path: input.relative_path.clone(),
                 start_line: Some(input.start_line),
                 line_count: Some(1),
+                include_preview: false,
             },
         )
         .expect("read source");
