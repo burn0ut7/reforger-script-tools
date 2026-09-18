@@ -34,11 +34,23 @@ an implementation priority. Commit and push coherent verified slices on `MCP`.
 | 6. Compatibility tools | Completed: shared dispatch, unchanged contracts, current report coverage; build, 1,059 Rust tests, API check, and five report tests pass. Real-cache navigation correctly rejects a changed pack. |
 | 7. Search UI caching/lifecycle | Completed: shared cache setup/session cleanup; build, four direct client tests, and 209 editor tests pass; measured page reuse retained. |
 | 8–9. Remaining architecture priorities | Workbench acceptance awaits a live endpoint; preview ownership review follows. |
-| Clean-window MCP activation | Reproduce and diagnose the failed acceptance gate. |
+| Clean-window MCP activation | Completed: native discovery readiness race fixed in acceptance; three consecutive isolated-window runs and lint pass. |
 | Final acceptance | Full Rust/extension/package checks and feasible live Workbench acceptance. |
 
 Recommendation strength indicates confidence in investigating the seam, not
 permission to delete behavior before its acceptance conditions are met.
+
+The clean-window test originally made one discovery request before VS Code
+1.138's `AfterRestored` MCP discovery contribution had registered extension
+providers, then waited only for extension activation. Repeating native discovery
+and server start until the provider is ready fixes that test race and also covers
+cached definitions that activate only when resolved. No explicit extension
+activation, unconditional startup event, or production workaround was added.
+Three consecutive runs pass (approximately 0.8 s each), including the native
+Official Wiki tool call and dormant Workbench checks. Evidence: installed VS Code
+1.138 bundle's `mcpDiscovery` contribution, `discoverCollections`, and
+`workbench.mcp.listServer`/`startServer`; logs
+`.cache/reports/review-clean-window{,-repeat-1,-repeat-2}.log`.
 
 | Priority | Candidate | Strength | Reason to defer implementation |
 | --- | --- | --- | --- |

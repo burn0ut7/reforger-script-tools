@@ -25,10 +25,16 @@ suite('native MCP clean-window acceptance', () => {
 		assert.deepStrictEqual(extension.packageJSON.contributes.chatSkills ?? [], []);
 		assert.strictEqual(extension.isActive, false);
 
-		const discovery = vscode.commands.executeCommand('workbench.mcp.listServer');
-		await waitUntil(() => extension.isActive);
-		await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
-		await discovery;
+		// Native discovery is installed after workbench restoration. The extension
+		// test host may start earlier, so retry the real request until it is ready.
+		await waitUntil(async () => {
+			const discovery = vscode.commands.executeCommand('workbench.mcp.listServer');
+			await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
+			await discovery;
+			// Cached definitions need not activate until the server is resolved.
+			await vscode.commands.executeCommand('workbench.mcp.startServer', '*', { waitForLiveTools: true });
+			return extension.isActive;
+		});
 
 		const providers = extension.packageJSON.contributes.mcpServerDefinitionProviders as Array<{
 			id: string;
@@ -46,11 +52,6 @@ suite('native MCP clean-window acceptance', () => {
 			false,
 		);
 
-		await vscode.commands.executeCommand(
-			'workbench.mcp.startServer',
-			'*',
-			{ waitForLiveTools: true },
-		);
 		const wikiStatus = vscode.lm.tools.find(tool =>
 			tool.name.endsWith('official_wiki_status'));
 		assert.ok(
@@ -79,9 +80,12 @@ suite('native MCP clean-window acceptance', () => {
 	});
 });
 
-async function waitUntil(predicate: () => boolean): Promise<void> {
-	for (let attempt = 0; attempt < 100 && !predicate(); attempt += 1) {
+async function waitUntil(predicate: () => Promise<boolean>): Promise<void> {
+	for (let attempt = 0; attempt < 100; attempt += 1) {
+		if (await predicate()) {
+			return;
+		}
 		await new Promise(resolve => setTimeout(resolve, 50));
 	}
-	assert.strictEqual(predicate(), true, 'VS Code did not activate the contributed MCP provider');
+	assert.fail('VS Code did not activate the contributed MCP provider');
 }
