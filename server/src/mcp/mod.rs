@@ -1437,9 +1437,9 @@ impl ReforgerMcpServer {
         &self,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
+        let permit = self.acquire_request_admission(&context).await?;
         let corpus = self.official_wiki.clone();
-        let mut worker = tokio::task::spawn_blocking(move || corpus.status());
+        let mut worker = spawn_admitted_worker(permit, move || corpus.status());
         let deadline = tokio::time::sleep(Duration::from_millis(official_wiki_deadline_ms()));
         tokio::pin!(deadline);
         let status: OfficialWikiStatus = tokio::select! {
@@ -1455,11 +1455,11 @@ impl ReforgerMcpServer {
         request: OfficialWikiSearchRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
+        let permit = self.acquire_request_admission(&context).await?;
         let corpus = self.official_wiki.clone();
         let control = OfficialWikiControl::default();
         let worker_control = control.clone();
-        let mut worker = tokio::task::spawn_blocking(move || {
+        let mut worker = spawn_admitted_worker(permit, move || {
             corpus.search_with_control(request, &worker_control)
         });
         let deadline = tokio::time::sleep(Duration::from_millis(official_wiki_deadline_ms()));
@@ -1480,12 +1480,13 @@ impl ReforgerMcpServer {
         request: OfficialWikiReadRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
+        let permit = self.acquire_request_admission(&context).await?;
         let corpus = self.official_wiki.clone();
         let control = OfficialWikiControl::default();
         let worker_control = control.clone();
-        let mut worker =
-            tokio::task::spawn_blocking(move || corpus.read_with_control(request, &worker_control));
+        let mut worker = spawn_admitted_worker(permit, move || {
+            corpus.read_with_control(request, &worker_control)
+        });
         let deadline = tokio::time::sleep(Duration::from_millis(official_wiki_deadline_ms()));
         tokio::pin!(deadline);
         let result = tokio::select! {
@@ -1503,8 +1504,7 @@ impl ReforgerMcpServer {
         &self,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
-        record_debug_admission();
+        let permit = self.acquire_request_admission(&context).await?;
 
         let deadline = tokio::time::sleep(Duration::from_millis(initialization_deadline_ms()));
         tokio::pin!(deadline);
@@ -1512,7 +1512,7 @@ impl ReforgerMcpServer {
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
         let mut initialization =
-            tokio::task::spawn_blocking(move || catalogue.status(&worker_control));
+            spawn_admitted_worker(permit, move || catalogue.status(&worker_control));
         let status = tokio::select! {
             biased;
             _ = context.ct.cancelled() => {
@@ -1547,7 +1547,7 @@ impl ReforgerMcpServer {
         request: GameDataSearchRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
+        let permit = self.acquire_request_admission(&context).await?;
         let catalogue = self.game_data.clone();
         let cold_initialization = !catalogue.is_initialized();
         let deadline = tokio::time::sleep(Duration::from_millis(if cold_initialization {
@@ -1559,7 +1559,7 @@ impl ReforgerMcpServer {
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
         let mut worker =
-            tokio::task::spawn_blocking(move || catalogue.search(&worker_control, request));
+            spawn_admitted_worker(permit, move || catalogue.search(&worker_control, request));
         let page = tokio::select! {
             biased;
             _ = context.ct.cancelled() => { cancel_worker(&control, &mut worker).await; return Err(McpError::internal_error("request cancelled", None)); }
@@ -1582,14 +1582,12 @@ impl ReforgerMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let permit = self.acquire_request_admission(&context).await?;
-        record_debug_admission();
+
         let catalogue = self.game_data.clone();
         let cold = !catalogue.is_initialized();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
-        let mut worker = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            delay_debug_research_worker();
+        let mut worker = spawn_admitted_worker(permit, move || {
             catalogue.research_intent(&worker_control, request)
         });
         let deadline = tokio::time::sleep(Duration::from_millis(if cold {
@@ -1629,7 +1627,7 @@ impl ReforgerMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let permit = self.acquire_request_admission(&context).await?;
-        record_debug_admission();
+
         let query = input.query.split_whitespace().collect::<Vec<_>>().join(" ");
         if query.is_empty() || query.chars().count() > 256 {
             return Ok(tool_error(
@@ -1671,9 +1669,7 @@ impl ReforgerMcpServer {
         let wiki_control = OfficialWikiControl::default();
         let worker_wiki_control = wiki_control.clone();
         let worker_query = query.clone();
-        let mut worker = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            delay_debug_research_worker();
+        let mut worker = spawn_admitted_worker(permit, move || {
             search_reforger_sources(
                 &game_data,
                 &workspace,
@@ -1710,7 +1706,7 @@ impl ReforgerMcpServer {
         input: McpGameDataResourceSearchInput,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
+        let permit = self.acquire_request_admission(&context).await?;
         let catalogue = self.resource_catalogue.clone();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
@@ -1723,7 +1719,7 @@ impl ReforgerMcpServer {
             limit: input.limit.unwrap_or(100),
         };
         let mut worker =
-            tokio::task::spawn_blocking(move || catalogue.search(&worker_control, request));
+            spawn_admitted_worker(permit, move || catalogue.search(&worker_control, request));
         let deadline = tokio::time::sleep(Duration::from_millis(initialization_deadline_ms()));
         tokio::pin!(deadline);
         let result = tokio::select! {
@@ -1736,7 +1732,7 @@ impl ReforgerMcpServer {
             Ok(page) => typed_success(&page),
             Err(ResourceSearchError::Cancelled) => Err(McpError::internal_error("request cancelled", None)),
             Err(ResourceSearchError::StaleRevision) | Err(ResourceSearchError::InvalidCursor) => Ok(tool_error("stale_resource_cursor", "The resource catalogue revision or cursor is stale.", "Call the resource search without catalogueRevision and cursor, then continue with the returned revision and cursor.")),
-            Err(ResourceSearchError::Unavailable) => Ok(tool_error("game_data_unavailable", "The offline Game Data resource catalogue is unavailable.", "Configure the Workbench loaded add-on inventory and retry.")),
+            Err(ResourceSearchError::Unavailable) => Ok(tool_error("game_data_unavailable", "The offline Game Data resource catalogue is unavailable.", "Check the external-index mode and add-on index storage. Loaded mode also needs the current Workbench scope or project dependency descriptors.")),
         }
     }
 
@@ -1745,13 +1741,14 @@ impl ReforgerMcpServer {
         request: TextSearchRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
+        let permit = self.acquire_request_admission(&context).await?;
         let catalogue = self.game_data.clone();
         let cold_initialization = !catalogue.is_initialized();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
-        let mut worker =
-            tokio::task::spawn_blocking(move || catalogue.search_text(&worker_control, request));
+        let mut worker = spawn_admitted_worker(permit, move || {
+            catalogue.search_text(&worker_control, request)
+        });
         let deadline = tokio::time::sleep(Duration::from_millis(if cold_initialization {
             initialization_deadline_ms()
         } else {
@@ -1796,13 +1793,12 @@ impl ReforgerMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let permit = self.acquire_request_admission(&context).await?;
-        record_debug_admission();
+
         let catalogue = self.game_data.clone();
         let cold = !catalogue.is_initialized();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
-        let mut worker = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
+        let mut worker = spawn_admitted_worker(permit, move || {
             catalogue.list_members(&worker_control, request)
         });
         let deadline = tokio::time::sleep(Duration::from_millis(if cold {
@@ -1829,13 +1825,12 @@ impl ReforgerMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let permit = self.acquire_request_admission(&context).await?;
-        record_debug_admission();
+
         let catalogue = self.game_data.clone();
         let cold = !catalogue.is_initialized();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
-        let mut worker = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
+        let mut worker = spawn_admitted_worker(permit, move || {
             catalogue.query_relationships(&worker_control, request)
         });
         let deadline = tokio::time::sleep(Duration::from_millis(if cold {
@@ -1868,8 +1863,7 @@ impl ReforgerMcpServer {
         let cold = !game_data.is_initialized();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
-        let mut worker = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
+        let mut worker = spawn_admitted_worker(permit, move || {
             let workspace_snapshot = match workspace.relationship_snapshot(&worker_control) {
                 Ok(snapshot) => Some(snapshot),
                 Err(WorkspaceCatalogueError::Unavailable) => None,
@@ -1959,13 +1953,14 @@ impl ReforgerMcpServer {
         symbol_ref: String,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
+        let permit = self.acquire_request_admission(&context).await?;
         let catalogue = self.game_data.clone();
         let cold_initialization = !catalogue.is_initialized();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
-        let mut worker =
-            tokio::task::spawn_blocking(move || catalogue.inspect(&worker_control, symbol_ref));
+        let mut worker = spawn_admitted_worker(permit, move || {
+            catalogue.inspect(&worker_control, symbol_ref)
+        });
         let deadline = tokio::time::sleep(Duration::from_millis(if cold_initialization {
             initialization_deadline_ms()
         } else {
@@ -1989,13 +1984,14 @@ impl ReforgerMcpServer {
         request: GameDataSourceReadRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
+        let permit = self.acquire_request_admission(&context).await?;
         let catalogue = self.game_data.clone();
         let cold_initialization = !catalogue.is_initialized();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
-        let mut worker =
-            tokio::task::spawn_blocking(move || catalogue.read_source(&worker_control, request));
+        let mut worker = spawn_admitted_worker(permit, move || {
+            catalogue.read_source(&worker_control, request)
+        });
         let deadline = tokio::time::sleep(Duration::from_millis(if cold_initialization {
             initialization_deadline_ms()
         } else {
@@ -2019,14 +2015,15 @@ impl ReforgerMcpServer {
         request: GameDataSearchRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
+        let permit = self.acquire_request_admission(&context).await?;
         let workspace = self.workspace.clone();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
         let mut worker =
-            tokio::task::spawn_blocking(move || workspace.search(&worker_control, request));
-        let deadline =
-            tokio::time::sleep(Duration::from_millis(READY_GAME_DATA_OPERATION_DEADLINE_MS));
+            spawn_admitted_worker(permit, move || workspace.search(&worker_control, request));
+        let deadline = tokio::time::sleep(Duration::from_millis(
+            ready_game_data_operation_deadline_ms(),
+        ));
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
@@ -2045,12 +2042,13 @@ impl ReforgerMcpServer {
         request: TextSearchRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
+        let permit = self.acquire_request_admission(&context).await?;
         let workspace = self.workspace.clone();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
-        let mut worker =
-            tokio::task::spawn_blocking(move || workspace.search_text(&worker_control, request));
+        let mut worker = spawn_admitted_worker(permit, move || {
+            workspace.search_text(&worker_control, request)
+        });
         let deadline = tokio::time::sleep(Duration::from_millis(text_search_deadline_ms()));
         tokio::pin!(deadline);
         let result = tokio::select! {
@@ -2084,14 +2082,16 @@ impl ReforgerMcpServer {
         symbol_ref: String,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
+        let permit = self.acquire_request_admission(&context).await?;
         let workspace = self.workspace.clone();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
-        let mut worker =
-            tokio::task::spawn_blocking(move || workspace.inspect(&worker_control, &symbol_ref));
-        let deadline =
-            tokio::time::sleep(Duration::from_millis(READY_GAME_DATA_OPERATION_DEADLINE_MS));
+        let mut worker = spawn_admitted_worker(permit, move || {
+            workspace.inspect(&worker_control, &symbol_ref)
+        });
+        let deadline = tokio::time::sleep(Duration::from_millis(
+            ready_game_data_operation_deadline_ms(),
+        ));
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
@@ -2110,14 +2110,16 @@ impl ReforgerMcpServer {
         request: GameDataSourceReadRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
+        let permit = self.acquire_request_admission(&context).await?;
         let workspace = self.workspace.clone();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
-        let mut worker =
-            tokio::task::spawn_blocking(move || workspace.read_source(&worker_control, request));
-        let deadline =
-            tokio::time::sleep(Duration::from_millis(READY_GAME_DATA_OPERATION_DEADLINE_MS));
+        let mut worker = spawn_admitted_worker(permit, move || {
+            workspace.read_source(&worker_control, request)
+        });
+        let deadline = tokio::time::sleep(Duration::from_millis(
+            ready_game_data_operation_deadline_ms(),
+        ));
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
@@ -2136,14 +2138,16 @@ impl ReforgerMcpServer {
         request: GameDataMemberRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
+        let permit = self.acquire_request_admission(&context).await?;
         let workspace = self.workspace.clone();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
-        let mut worker =
-            tokio::task::spawn_blocking(move || workspace.list_members(&worker_control, request));
-        let deadline =
-            tokio::time::sleep(Duration::from_millis(READY_GAME_DATA_OPERATION_DEADLINE_MS));
+        let mut worker = spawn_admitted_worker(permit, move || {
+            workspace.list_members(&worker_control, request)
+        });
+        let deadline = tokio::time::sleep(Duration::from_millis(
+            ready_game_data_operation_deadline_ms(),
+        ));
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
@@ -2162,15 +2166,16 @@ impl ReforgerMcpServer {
         request: GameDataRelationshipRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self.acquire_request_admission(&context).await?;
+        let permit = self.acquire_request_admission(&context).await?;
         let workspace = self.workspace.clone();
         let control = IndexBuildControl::default();
         let worker_control = control.clone();
-        let mut worker = tokio::task::spawn_blocking(move || {
+        let mut worker = spawn_admitted_worker(permit, move || {
             workspace.query_relationships(&worker_control, request)
         });
-        let deadline =
-            tokio::time::sleep(Duration::from_millis(READY_GAME_DATA_OPERATION_DEADLINE_MS));
+        let deadline = tokio::time::sleep(Duration::from_millis(
+            ready_game_data_operation_deadline_ms(),
+        ));
         tokio::pin!(deadline);
         let result = tokio::select! {
             biased;
@@ -2821,10 +2826,21 @@ fn ready_game_data_operation_deadline_exceeded() -> CallToolResult {
     )
 }
 
-async fn cancel_worker<T>(
-    control: &IndexBuildControl,
-    worker: &mut tokio::task::JoinHandle<T>,
-) {
+// The permit belongs to the actual blocking job, including time spent queued
+// or finishing after its async request has cancelled or exceeded its deadline.
+fn spawn_admitted_worker<T: Send + 'static>(
+    permit: OwnedSemaphorePermit,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> tokio::task::JoinHandle<T> {
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        record_debug_admission();
+        delay_debug_worker();
+        work()
+    })
+}
+
+async fn cancel_worker<T>(control: &IndexBuildControl, worker: &mut tokio::task::JoinHandle<T>) {
     control.cancel();
     let _ = tokio::time::timeout(Duration::from_millis(CANCELLATION_JOIN_GRACE_MS), worker).await;
 }
@@ -2893,8 +2909,8 @@ fn record_debug_admission() {
 fn record_debug_admission() {}
 
 #[cfg(all(feature = "test-hooks", debug_assertions))]
-fn delay_debug_research_worker() {
-    let delay_ms = std::env::var("REFORGER_MCP_TEST_RESEARCH_NONCOOPERATIVE_DELAY_MS")
+fn delay_debug_worker() {
+    let delay_ms = std::env::var("REFORGER_MCP_TEST_WORKER_NONCOOPERATIVE_DELAY_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
@@ -2904,7 +2920,7 @@ fn delay_debug_research_worker() {
 }
 
 #[cfg(not(all(feature = "test-hooks", debug_assertions)))]
-fn delay_debug_research_worker() {}
+fn delay_debug_worker() {}
 
 impl McpToolProfile {
     fn includes(self, name: &str) -> bool {
@@ -5173,10 +5189,7 @@ async fn blocking_workbench_call<T: Serialize + Send + 'static>(
             permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))?
         }
     };
-    let worker = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        call()
-    });
+    let worker = spawn_admitted_worker(permit, move || call());
     let result = tokio::select! {
         _ = context.ct.cancelled() => {
             return Err(McpError::internal_error("request cancelled", None));
@@ -5206,10 +5219,7 @@ async fn blocking_workbench_capture_call(
             permit.map_err(|_| McpError::internal_error("MCP request admission is unavailable", None))?
         }
     };
-    let worker = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        call()
-    });
+    let worker = spawn_admitted_worker(permit, move || call());
     let result = tokio::select! {
         _ = context.ct.cancelled() => {
             return Err(McpError::internal_error("request cancelled", None));

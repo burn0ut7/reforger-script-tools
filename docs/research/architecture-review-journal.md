@@ -27,7 +27,7 @@ an implementation priority. Commit and push coherent verified slices on `MCP`.
 | Work | Execution status |
 | --- | --- |
 | 1. External scope selection | Completed: shared cached selection and removal of stale-graph fallback; build and 1,052 Rust tests pass. |
-| 2. MCP worker lifetime | Admission ownership inventory in progress. |
+| 2. MCP worker lifetime | Completed: one launcher owns actual worker admission; build and 1,054 Rust tests pass. |
 | 3–9. Remaining architecture priorities | Queued in the order below. |
 | Clean-window MCP activation | Reproduce and diagnose the failed acceptance gate. |
 | Final acceptance | Full Rust/extension/package checks and feasible live Workbench acceptance. |
@@ -106,6 +106,26 @@ promises them, explicit availability differences, and unchanged warm-start I/O.
 Do not remove the deliberate offline index feature.
 
 ## 2. One MCP worker lifetime policy
+
+**Completed:** All 22 blocking-worker launch sites now use one private
+launcher that moves admission into the worker. Request cancellation, deadlines,
+and tool-specific error mapping retain their existing behavior. The test-only
+noncooperative delay now covers every family through that same launcher and
+remains gated behind the non-default `test-hooks` feature and debug builds.
+
+The new real-process tests cancel and time out eight admitted calls across 15
+wiki, Game Data, and workspace operations, verify that a ninth waits beyond the
+join grace, exercise ping while saturated, and check admission resumes and EOF
+terminates the process. Cancelled requests publish no result. Existing intent
+research, unified-search, panic, and Workbench tests remain separate coverage.
+Focused stress checks, `compile`, and all 1,054 Rust tests pass. Logs:
+`.cache/reports/review-admission-focused.log`,
+`.cache/reports/review-admission-compile.log`, and
+`.cache/reports/review-admission-server.log`. Live Workbench acceptance remains
+part of the final review gate; this change preserves its existing worker-owned
+permit and request-cancellation behavior.
+
+The original investigation below records the problem and acceptance rationale.
 
 **Files:** `server/src/mcp/mod.rs::{search_official_wiki,
 search_game_data_symbols,research_game_data,search_reforger,

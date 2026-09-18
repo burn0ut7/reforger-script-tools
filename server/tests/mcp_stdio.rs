@@ -2409,6 +2409,130 @@ fn request_admission_bounds_in_flight_tool_calls() {
 }
 
 #[test]
+fn timed_out_tool_families_bound_actual_workers_after_the_join_grace() {
+    assert_noncooperative_tool_admission(false);
+}
+
+#[test]
+fn cancelled_tool_families_bound_actual_workers_after_the_join_grace() {
+    assert_noncooperative_tool_admission(true);
+}
+
+fn assert_noncooperative_tool_admission(cancel: bool) {
+    let cases = [
+        ("official_wiki_status", json!({})),
+        ("search_official_wiki", json!({"query":"test"})),
+        (
+            "read_official_wiki",
+            json!({"corpusRevision":"test", "relativePath":"test.md"}),
+        ),
+        ("game_data_status", json!({})),
+        ("search_game_data_symbols", json!({"query":"test"})),
+        ("search_game_data_resources", json!({"query":"test"})),
+        ("search_game_data_text", json!({"query":"test"})),
+        ("inspect_game_data_symbol", json!({"symbolRef":"test"})),
+        (
+            "read_game_data_source",
+            json!({"catalogueRevision":"test", "addonGuid":"0000000000000000", "relativePath":"test.c"}),
+        ),
+        ("search_workspace_symbols", json!({"query":"test"})),
+        ("search_workspace_text", json!({"query":"test"})),
+        ("inspect_workspace_symbol", json!({"symbolRef":"test"})),
+        (
+            "read_workspace_source",
+            json!({"catalogueRevision":"test", "relativePath":"test.c"}),
+        ),
+        ("list_workspace_symbol_members", json!({"symbolRef":"test"})),
+        (
+            "query_workspace_symbol_relationships",
+            json!({"symbolRef":"test", "relationshipKinds":["derivedTypes"]}),
+        ),
+    ];
+    for (tool, arguments) in cases {
+        let fixture = TempFixture::new(&format!(
+            "{tool}_{}",
+            if cancel {
+                "cancelled_workers"
+            } else {
+                "timed_out_workers"
+            }
+        ));
+        let marker = fixture.path().join("admitted");
+        let deadline = if cancel { "5000" } else { "50" };
+        let mut client = McpClient::spawn_with_env(
+            &["mcp"],
+            &[
+                ("REFORGER_MCP_TEST_WORKER_NONCOOPERATIVE_DELAY_MS", "600"),
+                ("REFORGER_MCP_TEST_INITIALIZATION_DEADLINE_MS", deadline),
+                (
+                    "REFORGER_MCP_TEST_GAME_DATA_OPERATION_DEADLINE_MS",
+                    deadline,
+                ),
+                ("REFORGER_MCP_TEST_TEXT_SEARCH_DEADLINE_MS", deadline),
+                ("REFORGER_MCP_TEST_OFFICIAL_WIKI_DEADLINE_MS", deadline),
+                (
+                    "REFORGER_MCP_TEST_ADMISSION_MARKER",
+                    marker.to_str().unwrap(),
+                ),
+            ],
+        );
+        client.initialize(1);
+        for id in 10..18 {
+            client.send(json!({"jsonrpc":"2.0", "id":id, "method":"tools/call",
+                "params":{"name":tool,"arguments":arguments}}));
+        }
+        wait_for_lines(&marker, 8, Duration::from_secs(2));
+        client.send(json!({"jsonrpc":"2.0", "id":18, "method":"tools/call",
+            "params":{"name":tool,"arguments":arguments}}));
+        if cancel {
+            for id in 10..18 {
+                client.send(json!({"jsonrpc":"2.0", "method":"notifications/cancelled",
+                    "params":{"requestId":id,"reason":"admission stress test"}}));
+            }
+        }
+        if cancel {
+            // Wire cancellation suppresses responses entirely. Give the async
+            // requests time to exit while the blocking jobs remain alive.
+            thread::sleep(Duration::from_millis(200));
+        } else {
+            let first_responses = client.take_responses(8);
+            assert!(
+                first_responses.iter().all(|response| {
+                    response.pointer("/result/structuredContent/code")
+                        == Some(&json!("deadline_exceeded"))
+                }),
+                "{tool}: timed-out work must not publish success: {first_responses:?}"
+            );
+        }
+        // Responses have returned, but noncooperative jobs are still sleeping.
+        assert_eq!(
+            file_line_count(&marker),
+            8,
+            "{tool}: ninth worker admitted before a worker exited"
+        );
+        client.send(json!({"jsonrpc":"2.0", "id":99, "method":"ping"}));
+        assert!(
+            client.response(99).get("result").is_some(),
+            "{tool}: ping must remain responsive"
+        );
+        let last = client.response(18);
+        if !cancel {
+            assert_tool_error_code(&last, "deadline_exceeded");
+        }
+        assert_eq!(
+            file_line_count(&marker),
+            9,
+            "{tool}: admission must resume after a worker exits"
+        );
+        client.close_stdin();
+        assert!(
+            client.wait_for_exit(Duration::from_secs(3)),
+            "{tool}: EOF must terminate the process"
+        );
+    }
+}
+
+#[test]
 fn timed_out_research_workers_retain_admission_until_they_exit() {
     let fixture = TempFixture::new("mcp_research_admission");
     let scripts_root = fixture.path().join("scripts");
@@ -2421,7 +2545,7 @@ fn timed_out_research_workers_retain_admission_until_they_exit() {
     let mut client = McpClient::spawn_owned_with_env(
         &game_data.arguments,
         &[
-            ("REFORGER_MCP_TEST_RESEARCH_NONCOOPERATIVE_DELAY_MS", "500"),
+            ("REFORGER_MCP_TEST_WORKER_NONCOOPERATIVE_DELAY_MS", "500"),
             ("REFORGER_MCP_TEST_GAME_DATA_OPERATION_DEADLINE_MS", "50"),
             (
                 "REFORGER_MCP_TEST_ADMISSION_MARKER",
@@ -2475,7 +2599,7 @@ fn timed_out_unified_search_workers_retain_admission_until_they_exit() {
     let mut client = McpClient::spawn_owned_with_env(
         &arguments,
         &[
-            ("REFORGER_MCP_TEST_RESEARCH_NONCOOPERATIVE_DELAY_MS", "500"),
+            ("REFORGER_MCP_TEST_WORKER_NONCOOPERATIVE_DELAY_MS", "500"),
             ("REFORGER_MCP_TEST_GAME_DATA_OPERATION_DEADLINE_MS", "50"),
             (
                 "REFORGER_MCP_TEST_ADMISSION_MARKER",

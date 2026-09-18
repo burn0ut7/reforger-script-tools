@@ -162,6 +162,13 @@ The packaged executable also has an independent MCP mode. An MCP client starts
 its own local `stdio` process; it neither attaches to the editor-owned LSP nor
 requires VS Code to remain running. LSP and MCP reuse the same Rust language
 and evidence modules, so they do not establish competing semantic authorities.
+All admitted blocking MCP operations retain their concurrency permit until the
+actual worker exits, including after a request timeout or cancellation. One
+worker launcher owns this invariant across wiki, workspace, Game Data, and
+Workbench operations. Per-operation deadlines and cancellation controls remain
+distinct; cancelling a Workbench request does not roll back an editor mutation
+that has already begun. Ping does not wait for worker admission.
+
 The extension contributes one native VS Code MCP collection and registers its
 definition provider before any Workbench startup gate. VS Code's MCP collection
 activation starts the extension narrowly when an agent needs the provider; the
