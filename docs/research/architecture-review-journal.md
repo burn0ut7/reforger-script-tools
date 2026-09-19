@@ -6,7 +6,7 @@ selection, Workbench ownership, developer tooling, and documentation routing.
 This is a source-led architectural review, not exhaustive proof of every
 language feature or live Workbench operation. No ADR files were present.
 
-## Changes made
+## Initial changes (`4c85a8ae`)
 
 | Change | Before → after | Compatibility and verification |
 | --- | --- | --- |
@@ -17,7 +17,7 @@ language feature or live Workbench operation. No ADR files were present.
 | Remove retired skill tooling | Three orphaned validators required absent packaged skills → deleted `tools/agent-skills.mjs`, its test, and `tools/check-agent-skills.mjs` | Package manifest, VSIX allowlist, and existing activation tests already exclude these skills. Client-managed skills and `.codex/` are untouched. Removed 378 lines of obsolete tooling. |
 | Remove repeated checks and stale routes | `pretest` repeated lint already run by `compile`; documentation index had 19 absent targets → one lint pass and existing document routes | Created this journal at the already-designated review path and removed the other 18 broken index entries. Corrected obsolete skill-packaging claims in README and owning docs. |
 
-## Prioritized remaining work
+## Prioritized review execution
 
 The user authorized pursuing the full review as an active goal on 2026-09-18.
 Complete each item through its acceptance checks or record the evidence for
@@ -30,13 +30,13 @@ an implementation priority. Commit and push coherent verified slices on `MCP`.
 | 2. MCP worker lifetime | Completed: one launcher owns actual worker admission; build and 1,054 Rust tests pass. |
 | 3. Candidate index ownership | Completed: exact runtime owners replace substitution; build and 1,057 Rust tests pass. |
 | 4. Shared foreground syntax | Completed: shared immutable syntax; profile improves allocations/retention, build and 1,058 Rust tests pass. |
-| 5. Cache metadata | Verified: retained compact/repair formats, removed unreachable decode, corrected cache-only provenance. Build and 1,058 Rust tests pass; first-navigation measurement follows the priority 6 report repair. |
+| 5. Cache metadata | Verified: retained compact/repair formats, removed unreachable decode, corrected cache-only provenance. Real-cache first navigation awaits authoritative reconciliation of a changed pack; source integrity checks remain intact. |
 | 6. Compatibility tools | Completed: shared dispatch, unchanged contracts, current report coverage; build, 1,059 Rust tests, API check, and five report tests pass. Real-cache navigation correctly rejects a changed pack. |
 | 7. Search UI caching/lifecycle | Completed: shared cache setup/session cleanup; build, four direct client tests, and 209 editor tests pass; measured page reuse retained. |
-| 8. Workbench ownership | Public launch now reached through the existing stdio test client, but Windows rejected process creation; diagnosis and live acceptance remain pending. |
+| 8. Workbench ownership | Implemented: one private disk-package owner and one repair decision; 1,063 Rust tests pass. Live acceptance is blocked by the executable's system-wide administrator requirement (Windows error 740). |
 | 9. Preview ownership | Completed: Rust lexical projection and existing semantic spans replace the TypeScript scanner; 1,063 Rust tests, five direct client tests, five report tests, and 210 editor tests pass. |
 | Clean-window MCP activation | Completed: native discovery readiness race fixed in acceptance; three consecutive isolated-window runs and lint pass. |
-| Final acceptance | Full Rust/extension/package checks and feasible live Workbench acceptance. |
+| Final acceptance | Automated gates pass: 1,063 Rust tests, 210 editor tests, clean-window activation, API contracts, and installed VSIX workflows. Live Workbench and reconciled real-cache navigation remain blocked. |
 
 Recommendation strength indicates confidence in investigating the seam, not
 permission to delete behavior before its acceptance conditions are met.
@@ -481,6 +481,58 @@ cached navigation for repeated full-corpus scans.
 
 ## 8. Deepen Workbench internals at existing seams
 
+**Implemented:** The private `workbench/managed_bridge.rs` module now owns
+manifest loading, version protection, payload verification, file repair, and
+legacy migration. A short-lived package snapshot supplies the controller's
+disk status and active-version comparison; that status path reads its manifest
+once instead of three times. The controller retains authorization, locking,
+native validation, activation, process identity, save-first recovery, and logs.
+No second gateway or public interface was added. All 30 payload filename/source
+pairs, script bytes, bridge version `1.52.13`, and protocol version `1` are
+unchanged.
+
+The parallel test-only repair/maintenance implementation was deleted. Repair
+tests now execute the production package operation, and the no-handler-probe
+regression executes the actual controller preparation path against a listening
+peer. Existing coverage retains first-install authorization, idempotence,
+newer/unknown versions, missing/modified/old files, manifest/protocol mismatch,
+legacy migration, unrelated files, unsafe deletion names, and native protocol
+behavior. The 126 focused Workbench tests and full 1,063-test Rust suite pass
+(two manual profiles ignored). Build and API checks are recorded under
+`.cache/reports/review-managed-*.log`.
+
+Final release acceptance also passes: 210 editor tests, isolated clean-window
+native MCP activation, the 319-file VSIX allowlist, and installed-runtime
+verification of 311 byte-identical Wiki files, all 20 authoring tools, and
+independent workspace/Wiki workflows. Logs are
+`.cache/reports/review-managed-{editor-final,clean-window-final,
+test-packaged-official-wiki}.log`. These checks ran against the final packaged
+binary. The documentation router's eight targets resolve and the diff has no
+whitespace errors.
+
+**Live gate blocked:** The existing `McpStdioClient` can start the complete
+public `all` catalogue even though the connected authoring profile omits launch.
+This route calls the documented `workbench_launch` and `workbench_read_logs`
+tools; it does not use private process mode or raw NET API. An exact disposable
+review project was prepared under `.cache/workbench-review/project`. Windows
+rejects process creation before Workbench starts. Adding the numeric OS code to
+the existing support log identified `740`, `ERROR_ELEVATION_REQUIRED` ([Microsoft
+reference](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--500-999-)).
+The executable's existing machine-wide compatibility entry has `~ RUNASADMIN`.
+That setting was read, not changed. Evidence:
+`.cache/reports/review-workbench-launch-diagnosed.jsonl`, support reference
+`wb-45480-1789751244962-1`.
+The final status recheck still reports `workbench_unavailable` (reference
+`wb-92596-1789786637065-2`), and the machine-wide administrator flag remains set.
+
+The user must open Workbench through the Windows elevation prompt before
+native compilation, reload generation/log verification, live persistence, and
+recovery acceptance can finish. A passing simulated endpoint suite does not
+complete those gates. Real-cache navigation also remains pending authoritative
+reconciliation of the changed game pack described in priority 5.
+
+The original investigation below records the problem and acceptance rationale.
+
 **Files:** `server/src/workbench.rs`, `server/src/workbench_bridge.rs`,
 `server/src/workbench_capture.rs`, `server/src/mcp/mod.rs`,
 `src/workbenchNetApi/gateway/workbenchGateway.ts`.
@@ -528,7 +580,10 @@ was deleted; masking preserves UTF-16 columns for subsequent semantic tokens.
 and one 323,121-byte synthetic source, with seven measured fresh-process samples
 per mode. Median first-row latency was 4.79 / 6.29 ms and whole-page latency
 17.36 / 24.07 ms without / with the projection. Both modes made exactly 25
-source reads. This is a small measured CPU cost, not a performance improvement
+source reads. The final release binary measured 5.73 / 5.96 ms for the first
+row and 17.31 / 22.82 ms for the page with the same request counts
+(`.cache/reports/review-preview-page-profile-release.json`). This is a small
+measured CPU cost, not a performance improvement
 or a full editor latency claim; initial indexing and rich hydration are excluded.
 A separate Rust microprofile measured 1 / 1,951 microseconds for a 75-byte
 returned range after a 75 / 308,000-byte prefix. Evidence:
@@ -592,7 +647,7 @@ waiting for unnecessary rich semantic analysis.
 | Bounded locked-binary replacement retries | Windows process/file locks are an observed development constraint. |
 | Separate LSP and standalone MCP adapters | They reuse the same Rust engine and have different client/process lifetimes. |
 
-## Evidence and verification
+## Initial evidence and verification
 
 Source and existing tests establish the implementation facts above. Primary
 Reforger evidence consulted: packaged Official Wiki `Script Editor`, lines
@@ -670,9 +725,12 @@ workflows. This closes the original fresh-binary VSIX coverage gap. See
 Live Workbench status remained unavailable, support reference
 `wb-82840-1789744536236-4`; no live editor acceptance is claimed.
 
-## Top recommendation
+## Remaining acceptance
 
-Resolve [external scope selection](#1-one-external-scope-policy-for-symbols-and-resources)
-first: it contains two present implementations of the same user setting,
-making it a better consolidation target than deleting intentional recovery or
-splitting a large file for appearance.
+The cleanup implementations and retention decisions are recorded above. Finish
+the live gates once Workbench is available: native compilation, reload and fresh
+generation/log evidence, exact-identity lifecycle, persistence/readback, and
+recovery. Reconcile the changed Game Data pack through the authoritative
+Workbench-owned scope before repeating real-cache first-navigation measurements.
+Do not remove source revision checks or replace the public Workbench path to
+make these gates appear green.

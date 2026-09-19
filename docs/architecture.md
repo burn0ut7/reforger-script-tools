@@ -430,6 +430,15 @@ explicit custom operation may test its own handler availability.
 The package's 30 Enfusion sources are checked in under `server/bridge/` and
 are embedded by `server/src/workbench_bridge.rs`. They are the sole source of
 the installed bytes; Rust performs no runtime reformatting or source synthesis.
+The private `workbench/managed_bridge.rs` module owns the disk package's
+manifest, version protection, exact payload, repair, and legacy migration.
+Each operation reads a short-lived package snapshot; status and repair use
+the same maintenance decision. The controller retains authorization, the
+maintenance lock, native validation, activation, and correlated support logs.
+Tests exercise this same package repair path rather than a parallel test-only
+maintenance implementation. Launch failures include the numeric OS error in
+the support log so an endpoint failure can be distinguished from process
+creation failure without exposing raw process arguments.
 The development-only `tools/check-workbench-bridge-style.mjs` gate enforces the
 local base-game-derived contract: tab indentation, no trailing whitespace, one
 executable statement per physical line (except `for` headers), Allman control

@@ -1,10 +1,14 @@
+mod managed_bridge;
+#[cfg(test)]
 use crate::workbench_bridge::*;
 use crate::workbench_capture::{
     self, CaptureError, CaptureRegion, CapturedWindow, WorkbenchWindowList, DEFAULT_MAX_DIMENSION,
     MAX_MAX_DIMENSION, MIN_MAX_DIMENSION,
 };
+use managed_bridge::{bridge_payload, version_order};
+#[cfg(test)]
+use managed_bridge::{BridgeManifest, BridgeManifestFile};
 use schemars::JsonSchema;
-use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -1227,7 +1231,8 @@ impl WorkbenchController {
             .err()
             .map(|failure| failure_code(failure.code).to_string());
         let native = native_result.ok();
-        let mut bridge = self.bridge_disk_status(&paths.bridge_directory);
+        let mut bridge =
+            Self::bridge_disk_status(managed_bridge::Package::read(&paths.bridge_directory));
         let enfusion_protocol_registered = enfusion_protocol_registered(&paths);
         if native.is_some() {
             if !bridge.installed {
@@ -1411,22 +1416,11 @@ impl WorkbenchController {
                 profile_available: false,
             });
         }
-        let manifest_path = paths
-            .bridge_directory
-            .join("reforger-script-tools.manifest.json");
-        let mut existing_manifest = fs::read(&manifest_path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
-        if existing_manifest.is_none()
-            && self
-                .migrate_legacy_bridge(&paths.legacy_bridge_directory, &paths.bridge_directory)
-                .unwrap_or(false)
-        {
-            existing_manifest = fs::read(&manifest_path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
+        let mut package = managed_bridge::Package::read(&paths.bridge_directory);
+        if package.manifest.is_none() {
+            let _ = package.migrate_legacy(&paths.legacy_bridge_directory);
         }
-        if existing_manifest.is_none() && !allow_first_install {
+        if package.manifest.is_none() && !allow_first_install {
             return Err(self.correlate_failure_details(
                 "integration-maintenance",
                 "consent-required",
@@ -1434,31 +1428,24 @@ impl WorkbenchController {
                 json!({"managedDirectoryCreated": false, "manifestFound": false}),
             ));
         }
-        let bridge_changed = self.bridge_needs_maintenance(&paths.bridge_directory);
-        if bridge_changed {
-            self.write_managed_files(&paths.bridge_directory)
-                .map_err(|error| {
-                    self.correlate_failure_details(
-                        "integration-maintenance",
-                        "write-failed",
-                        failure(WorkbenchFailureCode::Unavailable),
-                        json!({
-                            "errorKind": format!("{:?}", error.kind()),
-                            "managedFileCount": bridge_payload().len(),
-                        }),
-                    )
-                })?;
-            existing_manifest = fs::read(&manifest_path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
-        }
+        let bridge_changed = package.repair().map_err(|error| {
+            self.correlate_failure_details(
+                "integration-maintenance",
+                "write-failed",
+                failure(WorkbenchFailureCode::Unavailable),
+                json!({
+                    "errorKind": format!("{:?}", error.kind()),
+                    "managedFileCount": bridge_payload().len(),
+                }),
+            )
+        })?;
         Ok(WorkbenchIntegrationBootstrapResult {
             net_api_enabled: false,
             net_api_write_performed: false,
             enfusion_protocol_registered: false,
             enfusion_protocol_write_performed: false,
-            bridge_installed: existing_manifest.is_some(),
-            bridge_version: existing_manifest.map(|manifest| manifest.bridge_version),
+            bridge_installed: package.manifest.is_some(),
+            bridge_version: package.manifest.map(|manifest| manifest.bridge_version),
             bridge_changed,
             profile_available: true,
         })
@@ -1496,14 +1483,8 @@ impl WorkbenchController {
                 }),
             ));
         }
-        let existing_manifest = fs::read(
-            paths
-                .bridge_directory
-                .join("reforger-script-tools.manifest.json"),
-        )
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
-        if let Some(manifest) = existing_manifest.as_ref().filter(|manifest| {
+        let package = managed_bridge::Package::read(&paths.bridge_directory);
+        if let Some(manifest) = package.manifest.as_ref().filter(|manifest| {
             version_order(&manifest.bridge_version, WORKBENCH_BRIDGE_VERSION).is_gt()
         }) {
             let active = self.active_bridge_status(&paths.bridge_directory, true);
@@ -4853,7 +4834,7 @@ impl WorkbenchController {
                 "launch",
                 "process-start-failed",
                 failure(WorkbenchFailureCode::Unavailable),
-                json!({"errorKind": format!("{:?}", error.kind())}),
+                json!({"errorKind": format!("{:?}", error.kind()), "osErrorCode": error.raw_os_error()}),
             )
         })?;
         if let Some(process) = workbench_processes()
@@ -5214,12 +5195,12 @@ impl WorkbenchController {
         bridge_directory: &std::path::Path,
         retry_activation: bool,
     ) -> ManagedBridgeStatus {
-        let disk = self.bridge_disk_status(bridge_directory);
-        let expected_protocol =
-            fs::read(bridge_directory.join("reforger-script-tools.manifest.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok())
-                .map(|manifest| manifest.protocol_version);
+        let package = managed_bridge::Package::read(bridge_directory);
+        let expected_protocol = package
+            .manifest
+            .as_ref()
+            .map(|manifest| manifest.protocol_version);
+        let disk = Self::bridge_disk_status(package);
         let mut raw = self.capabilities_handshake().ok();
         let handshake_matches = |raw: &RawBridgeCapabilities| {
             disk.installed_version
@@ -5254,16 +5235,13 @@ impl WorkbenchController {
         }
     }
 
-    fn bridge_disk_status(&self, bridge_directory: &std::path::Path) -> ManagedBridgeStatus {
-        let manifest = fs::read(bridge_directory.join("reforger-script-tools.manifest.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
-        let installed = manifest.is_some();
+    fn bridge_disk_status(package: managed_bridge::Package<'_>) -> ManagedBridgeStatus {
+        let installed = package.manifest.is_some();
         ManagedBridgeStatus {
             installed,
             installation_available: false,
-            maintenance_required: self.bridge_needs_maintenance(bridge_directory),
-            installed_version: manifest.map(|value| value.bridge_version),
+            maintenance_required: package.needs_maintenance(),
+            installed_version: package.manifest.map(|value| value.bridge_version),
             active_version: None,
             protocol_version: None,
             compatible: false,
@@ -5271,187 +5249,6 @@ impl WorkbenchController {
             capabilities: Vec::new(),
             capabilities_truncated: false,
         }
-    }
-
-    fn bridge_needs_maintenance(&self, bridge_directory: &std::path::Path) -> bool {
-        let Some(manifest) = fs::read(bridge_directory.join("reforger-script-tools.manifest.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok())
-        else {
-            return true;
-        };
-        version_order(&manifest.bridge_version, WORKBENCH_BRIDGE_VERSION).is_lt()
-            || (manifest.bridge_version == WORKBENCH_BRIDGE_VERSION
-                && (manifest.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
-                    || !manifest_matches_payload(&manifest)
-                    || bridge_payload().iter().any(|(name, content)| {
-                        fs::read(bridge_directory.join(name))
-                            .ok()
-                            .is_none_or(|bytes| sha256(&bytes) != sha256(content.as_bytes()))
-                    })))
-    }
-
-    #[cfg(test)]
-    fn maintain_existing_bridge(&self, bridge_directory: &std::path::Path) -> ManagedBridgeStatus {
-        let started = Instant::now();
-        let Ok(_maintenance) = self.maintenance_lock.lock() else {
-            return self.bridge_disk_status(bridge_directory);
-        };
-        let repaired = match self.repair_managed_files(bridge_directory) {
-            Ok(repaired) => repaired,
-            Err(error) => {
-                self.log_event_timed(
-                    "maintenance",
-                    "repair-failed",
-                    started,
-                    json!({
-                        "errorKind": format!("{:?}", error.kind()),
-                        "managedFiles": bridge_payload()
-                            .iter()
-                            .map(|(name, _)| *name)
-                            .collect::<Vec<_>>(),
-                    }),
-                );
-                return self.bridge_disk_status(bridge_directory);
-            }
-        };
-        if repaired {
-            let _ = self.gateway.validate_scripts();
-        }
-        // A missing custom NET API function is logged by Workbench as an error.
-        // Maintenance and diagnosis must therefore never probe an unregistered
-        // handler. Explicit custom operations remain responsible for their own
-        // availability result.
-        let status = self.bridge_disk_status(bridge_directory);
-        self.log_event_timed(
-            "maintenance",
-            if repaired {
-                "updated-reload-required"
-            } else {
-                "activation-pending"
-            },
-            started,
-            json!({
-                "repaired": repaired,
-                "installedVersion": status.installed_version.clone(),
-                "activeVersion": status.active_version.clone(),
-                "protocolVersion": status.protocol_version,
-                "managedFileCount": bridge_payload().len(),
-                "managedFiles": bridge_payload()
-                    .iter()
-                    .map(|(name, _)| *name)
-                    .collect::<Vec<_>>(),
-            }),
-        );
-        status
-    }
-
-    #[cfg(test)]
-    fn repair_managed_files(&self, bridge_directory: &std::path::Path) -> std::io::Result<bool> {
-        let manifest_path = bridge_directory.join("reforger-script-tools.manifest.json");
-        let manifest = fs::read(&manifest_path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
-        let needs_repair = manifest.as_ref().is_none_or(|manifest| {
-            version_order(&manifest.bridge_version, WORKBENCH_BRIDGE_VERSION).is_lt()
-                || (manifest.bridge_version == WORKBENCH_BRIDGE_VERSION
-                    && (manifest.protocol_version != WORKBENCH_BRIDGE_PROTOCOL_VERSION
-                        || !manifest_matches_payload(manifest)
-                        || bridge_payload().iter().any(|(name, content)| {
-                            fs::read(bridge_directory.join(name))
-                                .ok()
-                                .is_none_or(|bytes| sha256(&bytes) != sha256(content.as_bytes()))
-                        })))
-        });
-        if needs_repair {
-            self.write_managed_files(bridge_directory)?;
-        }
-        Ok(needs_repair)
-    }
-
-    fn migrate_legacy_bridge(
-        &self,
-        legacy_directory: &std::path::Path,
-        bridge_directory: &std::path::Path,
-    ) -> std::io::Result<bool> {
-        let legacy_manifest_path = legacy_directory.join("reforger-script-tools.manifest.json");
-        let Some(manifest) = fs::read(&legacy_manifest_path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok())
-        else {
-            return Ok(false);
-        };
-        if !manifest_matches_payload(&manifest) {
-            return Ok(false);
-        }
-        fs::create_dir_all(bridge_directory)?;
-        for file in &manifest.files {
-            let source = legacy_directory.join(&file.name);
-            let destination = bridge_directory.join(&file.name);
-            if destination.exists() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    "managed bridge migration destination already exists",
-                ));
-            }
-            fs::rename(source, destination)?;
-        }
-        fs::rename(
-            legacy_manifest_path,
-            bridge_directory.join("reforger-script-tools.manifest.json"),
-        )?;
-        Ok(true)
-    }
-
-    fn write_managed_files(&self, bridge_directory: &std::path::Path) -> std::io::Result<()> {
-        self.write_managed_payload(bridge_directory, bridge_payload())
-    }
-
-    fn write_managed_payload(
-        &self,
-        bridge_directory: &std::path::Path,
-        payload: &[(&str, &str)],
-    ) -> std::io::Result<()> {
-        if fs::symlink_metadata(bridge_directory)
-            .is_ok_and(|metadata| metadata.file_type().is_symlink())
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "managed bridge directory cannot be a symbolic link",
-            ));
-        }
-        fs::create_dir_all(bridge_directory)?;
-        let previous = fs::read(bridge_directory.join("reforger-script-tools.manifest.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<BridgeManifest>(&bytes).ok());
-        for (name, content) in payload {
-            fs::write(bridge_directory.join(name), content)?;
-        }
-        let files = payload
-            .iter()
-            .map(|(name, content)| BridgeManifestFile {
-                name: (*name).to_string(),
-                sha256: sha256(content.as_bytes()),
-            })
-            .collect::<Vec<_>>();
-        if let Some(previous) = previous {
-            for file in previous.files {
-                if is_managed_file_name(&file.name)
-                    && !files.iter().any(|current| current.name == file.name)
-                {
-                    let _ = fs::remove_file(bridge_directory.join(file.name));
-                }
-            }
-        }
-        let manifest = BridgeManifest {
-            bridge_version: WORKBENCH_BRIDGE_VERSION.to_string(),
-            protocol_version: WORKBENCH_BRIDGE_PROTOCOL_VERSION,
-            files,
-        };
-        fs::write(
-            bridge_directory.join("reforger-script-tools.manifest.json"),
-            serde_json::to_vec_pretty(&manifest).expect("bridge manifest serializes"),
-        )
     }
 
     fn paths(&self) -> ResolvedWorkbenchPaths {
@@ -5938,21 +5735,6 @@ fn failure_code(code: WorkbenchFailureCode) -> &'static str {
         WorkbenchFailureCode::CaptureInvalidRegion => "workbench_capture_invalid_region",
         WorkbenchFailureCode::CaptureTooLarge => "workbench_screenshot_too_large",
     }
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BridgeManifest {
-    bridge_version: String,
-    protocol_version: u32,
-    files: Vec<BridgeManifestFile>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BridgeManifestFile {
-    name: String,
-    sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -7743,32 +7525,6 @@ fn paths_equal(left: &std::path::Path, right: &std::path::Path) -> bool {
     left == right
 }
 
-fn manifest_matches_payload(manifest: &BridgeManifest) -> bool {
-    manifest_matches_payload_for(manifest, bridge_payload())
-}
-
-fn manifest_matches_payload_for(manifest: &BridgeManifest, payload: &[(&str, &str)]) -> bool {
-    manifest.files.len() == payload.len()
-        && payload.iter().all(|(name, content)| {
-            let expected_hash = sha256(content.as_bytes());
-            manifest
-                .files
-                .iter()
-                .any(|file| file.name == *name && file.sha256 == expected_hash)
-        })
-}
-
-fn is_managed_file_name(name: &str) -> bool {
-    !name.is_empty()
-        && name != "."
-        && name != ".."
-        && !name.contains('/')
-        && !name.contains('\\')
-        && std::path::Path::new(name)
-            .file_name()
-            .is_some_and(|file| file == name)
-}
-
 fn sha256(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -7802,16 +7558,6 @@ fn split_bounded_list(value: &str, max_items: usize, max_item_bytes: usize) -> (
         })
         .collect();
     (items, truncated)
-}
-
-fn version_order(left: &str, right: &str) -> std::cmp::Ordering {
-    match (Version::parse(left), Version::parse(right)) {
-        (Ok(left), Ok(right)) => left.cmp(&right),
-        _ if left == right => std::cmp::Ordering::Equal,
-        // An unrecognized installed version is never safe to overwrite
-        // automatically because its precedence cannot be proven.
-        _ => std::cmp::Ordering::Greater,
-    }
 }
 
 fn parse_validation_cursor(cursor: &str) -> Option<(String, usize)> {
@@ -8948,68 +8694,6 @@ fn acf_string(content: &str, key: &str) -> Option<String> {
     })
 }
 
-fn bridge_payload() -> &'static [(&'static str, &'static str)] {
-    &[
-        ("RST_WorkbenchCapabilities.c", BRIDGE_CAPABILITIES_SOURCE),
-        ("RST_WorkbenchState.c", BRIDGE_STATE_SOURCE),
-        ("RST_WorkbenchListEditors.c", BRIDGE_LIST_EDITORS_SOURCE),
-        ("RST_WorkbenchOpenEditor.c", BRIDGE_OPEN_EDITOR_SOURCE),
-        ("RST_WorkbenchOpenResource.c", BRIDGE_OPEN_RESOURCE_SOURCE),
-        ("RST_WorkbenchPlaySession.c", BRIDGE_PLAY_SESSION_SOURCE),
-        (
-            "RST_WorkbenchProjectContext.c",
-            BRIDGE_PROJECT_CONTEXT_SOURCE,
-        ),
-        (
-            "RST_WorkbenchLoadedAddonGraph.c",
-            BRIDGE_LOADED_ADDON_GRAPH_SOURCE,
-        ),
-        (
-            "RST_WorkbenchInspectResource.c",
-            BRIDGE_INSPECT_RESOURCE_SOURCE,
-        ),
-        (
-            "RST_WorkbenchWorldSelection.c",
-            BRIDGE_WORLD_SELECTION_SOURCE,
-        ),
-        (
-            "RST_WorkbenchSelectedEntityHierarchy.c",
-            BRIDGE_SELECTED_ENTITY_HIERARCHY_SOURCE,
-        ),
-        ("RST_WorkbenchListEntities.c", BRIDGE_ENTITY_LIST_SOURCE),
-        ("RST_WorkbenchSearchEntities.c", BRIDGE_ENTITY_SEARCH_SOURCE),
-        ("RST_WorkbenchLayerState.c", BRIDGE_LAYER_STATE_SOURCE),
-        ("RST_WorkbenchInspectEntity.c", BRIDGE_ENTITY_INSPECT_SOURCE),
-        ("RST_WorkbenchSetSelection.c", BRIDGE_SET_SELECTION_SOURCE),
-        (
-            "RST_WorkbenchFindEntitiesByRadius.c",
-            BRIDGE_ENTITY_RADIUS_QUERY_SOURCE,
-        ),
-        ("RST_WorkbenchSampleTerrain.c", BRIDGE_TERRAIN_SAMPLE_SOURCE),
-        (
-            "RST_WorkbenchViewportContext.c",
-            BRIDGE_VIEWPORT_CONTEXT_SOURCE,
-        ),
-        ("RST_WorkbenchTrace.c", BRIDGE_TRACE_SOURCE),
-        (
-            "RST_WorkbenchClearSelection.c",
-            BRIDGE_CLEAR_SELECTION_SOURCE,
-        ),
-        (
-            "RST_WorkbenchEntityMutation.c",
-            BRIDGE_ENTITY_MUTATION_SOURCE,
-        ),
-        ("RST_WorkbenchHistory.c", BRIDGE_HISTORY_SOURCE),
-        ("RST_WorkbenchShapePoints.c", BRIDGE_SHAPE_POINTS_SOURCE),
-        ("RST_WorkbenchShapeGeometry.c", BRIDGE_SHAPE_GEOMETRY_SOURCE),
-        ("RST_WorkbenchSpline.c", BRIDGE_SPLINE_SOURCE),
-        ("RST_WorkbenchComponents.c", BRIDGE_COMPONENTS_SOURCE),
-        ("RST_WorkbenchProperties.c", BRIDGE_PROPERTIES_SOURCE),
-        ("RST_WorkbenchPrefab.c", BRIDGE_PREFAB_SOURCE),
-        ("RST_WorkbenchListResources.c", BRIDGE_LIST_RESOURCES_SOURCE),
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -9663,7 +9347,7 @@ mod tests {
                     "resourceName": "{00B6CAF6E4A5BAB4}Prefabs/Props/Test.et"
                 })
             );
-                json!({
+            json!({
                     "bridgeVersion": "1.52.13",
                 "protocolVersion": 1,
                 "found": 1,
@@ -11459,9 +11143,7 @@ mod tests {
             .paths()
             .bridge_directory
             .join("RST_WorkbenchState.c");
-        controller
-            .write_managed_files(&controller.paths().bridge_directory)
-            .unwrap();
+        super::managed_bridge::write_managed_files(&controller.paths().bridge_directory).unwrap();
         fs::write(&bridge_file, "stale-state-handler").unwrap();
 
         assert_eq!(controller.state().unwrap().mode, "workbench");
@@ -11531,9 +11213,7 @@ mod tests {
             .paths()
             .bridge_directory
             .join("RST_WorkbenchState.c");
-        controller
-            .write_managed_files(&controller.paths().bridge_directory)
-            .unwrap();
+        super::managed_bridge::write_managed_files(&controller.paths().bridge_directory).unwrap();
         fs::write(&bridge_file, "stale-validation-handler").unwrap();
 
         assert!(controller.validate_scripts().unwrap().success);
@@ -11774,19 +11454,17 @@ mod tests {
             .join("reforger-script-tools");
         fs::create_dir_all(&bridge).unwrap();
         fs::write(bridge.join("user-script.c"), "keep me").unwrap();
-        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
-            user_directory: Some(root.clone()),
-            ..super::WorkbenchControllerOptions::default()
-        });
 
-        controller.write_managed_files(&bridge).unwrap();
+        super::managed_bridge::write_managed_files(&bridge).unwrap();
 
         assert_eq!(
             fs::read_to_string(bridge.join("user-script.c")).unwrap(),
             "keep me"
         );
         assert!(bridge.join("reforger-script-tools.manifest.json").is_file());
-        let status = controller.bridge_disk_status(&bridge);
+        let status = super::WorkbenchController::bridge_disk_status(
+            super::managed_bridge::Package::read(&bridge),
+        );
         assert!(status.installed);
         assert!(!status.maintenance_required);
         fs::remove_dir_all(root).unwrap();
@@ -11798,13 +11476,11 @@ mod tests {
         let scripts = root.join("scripts");
         let legacy = scripts.join("reforger-script-tools");
         let destination = scripts.join("WorkbenchGame").join("reforger-script-tools");
-        let controller =
-            super::WorkbenchController::new(super::WorkbenchControllerOptions::default());
-        controller.write_managed_files(&legacy).unwrap();
+        super::managed_bridge::write_managed_files(&legacy).unwrap();
         fs::write(legacy.join("user-script.c"), "preserve me").unwrap();
 
-        assert!(controller
-            .migrate_legacy_bridge(&legacy, &destination)
+        assert!(super::managed_bridge::Package::read(&destination)
+            .migrate_legacy(&legacy)
             .unwrap());
         assert!(destination
             .join("reforger-script-tools.manifest.json")
@@ -12008,10 +11684,10 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let controller =
-            super::WorkbenchController::new(super::WorkbenchControllerOptions::default());
 
-        controller.repair_managed_files(&bridge).unwrap();
+        super::managed_bridge::Package::read(&bridge)
+            .repair()
+            .unwrap();
 
         assert_eq!(
             fs::read_to_string(bridge.join("future.c")).unwrap(),
@@ -12348,9 +12024,7 @@ mod tests {
     fn automatic_maintenance_repairs_missing_modified_old_and_inconsistent_files() {
         let root = test_root("managed-repair");
         let bridge = root.join("bridge");
-        let controller =
-            super::WorkbenchController::new(super::WorkbenchControllerOptions::default());
-        controller.write_managed_files(&bridge).unwrap();
+        super::managed_bridge::write_managed_files(&bridge).unwrap();
         fs::write(
             bridge.join("RST_WorkbenchCapabilities.c"),
             "modified managed file",
@@ -12358,7 +12032,9 @@ mod tests {
         .unwrap();
         fs::remove_file(bridge.join("RST_WorkbenchState.c")).unwrap();
 
-        assert!(controller.repair_managed_files(&bridge).unwrap());
+        assert!(super::managed_bridge::Package::read(&bridge)
+            .repair()
+            .unwrap());
         for (name, content) in super::bridge_payload() {
             assert_eq!(fs::read(bridge.join(name)).unwrap(), content.as_bytes());
         }
@@ -12378,11 +12054,13 @@ mod tests {
         )
         .unwrap();
 
-        assert!(controller.repair_managed_files(&bridge).unwrap());
+        assert!(super::managed_bridge::Package::read(&bridge)
+            .repair()
+            .unwrap());
         assert!(!bridge.join("RST_ObsoleteCurrent.c").exists());
         let corrected: super::BridgeManifest =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-        assert!(super::manifest_matches_payload(&corrected));
+        assert!(super::managed_bridge::manifest_matches_payload(&corrected));
 
         let mut manifest: super::BridgeManifest =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
@@ -12399,7 +12077,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(controller.repair_managed_files(&bridge).unwrap());
+        assert!(super::managed_bridge::Package::read(&bridge)
+            .repair()
+            .unwrap());
         assert!(!bridge.join("RST_Obsolete.c").exists());
         let repaired: super::BridgeManifest =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
@@ -12423,7 +12103,9 @@ mod tests {
             serde_json::to_vec_pretty(&inconsistent).unwrap(),
         )
         .unwrap();
-        assert!(controller.repair_managed_files(&bridge).unwrap());
+        assert!(super::managed_bridge::Package::read(&bridge)
+            .repair()
+            .unwrap());
         let repaired_protocol: super::BridgeManifest =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
         assert_eq!(
@@ -12437,9 +12119,7 @@ mod tests {
     fn old_bridge_version_is_marked_for_automatic_maintenance() {
         let root = test_root("old-bridge-version-maintenance");
         let bridge = root.join("bridge");
-        let controller =
-            super::WorkbenchController::new(super::WorkbenchControllerOptions::default());
-        controller.write_managed_files(&bridge).unwrap();
+        super::managed_bridge::write_managed_files(&bridge).unwrap();
 
         let manifest_path = bridge.join("reforger-script-tools.manifest.json");
         let mut manifest: super::BridgeManifest =
@@ -12451,8 +12131,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(controller.bridge_needs_maintenance(&bridge));
-        assert!(controller.repair_managed_files(&bridge).unwrap());
+        assert!(super::managed_bridge::Package::read(&bridge).needs_maintenance());
+        assert!(super::managed_bridge::Package::read(&bridge)
+            .repair()
+            .unwrap());
         let repaired: super::BridgeManifest =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
         assert_eq!(repaired.bridge_version, super::WORKBENCH_BRIDGE_VERSION);
@@ -12462,12 +12144,30 @@ mod tests {
     #[test]
     fn maintenance_does_not_probe_an_unregistered_handler() {
         let root = test_root("activation-retry");
-        let bridge = root.join("bridge");
-        let controller =
-            super::WorkbenchController::new(super::WorkbenchControllerOptions::default());
-        controller.write_managed_files(&bridge).unwrap();
+        let profile = root.join("profile");
+        let bridge = profile.join("scripts/WorkbenchGame/reforger-script-tools");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let controller = super::WorkbenchController::new(super::WorkbenchControllerOptions {
+            profile_directory: Some(profile),
+            gateway: super::WorkbenchGatewayOptions {
+                port: listener.local_addr().unwrap().port(),
+                ..super::WorkbenchGatewayOptions::default()
+            },
+            ..super::WorkbenchControllerOptions::default()
+        });
+        super::managed_bridge::write_managed_files(&bridge).unwrap();
 
-        let status = controller.maintain_existing_bridge(&bridge);
+        let prepared = controller.prepare_bridge_locked(false).unwrap();
+        assert!(prepared.bridge_installed);
+        assert!(!prepared.bridge_changed);
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        let status = super::WorkbenchController::bridge_disk_status(
+            super::managed_bridge::Package::read(&bridge),
+        );
 
         assert_eq!(status.active_version, None);
         assert_eq!(status.protocol_version, None);
@@ -12498,7 +12198,7 @@ mod tests {
             },
             ..super::WorkbenchControllerOptions::default()
         });
-        controller.write_managed_files(&bridge).unwrap();
+        super::managed_bridge::write_managed_files(&bridge).unwrap();
 
         let status = controller.active_bridge_status(&bridge, false);
 
@@ -12543,10 +12243,8 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let controller =
-            super::WorkbenchController::new(super::WorkbenchControllerOptions::default());
 
-        controller.write_managed_files(&bridge).unwrap();
+        super::managed_bridge::write_managed_files(&bridge).unwrap();
 
         assert!(!bridge.join("obsolete.c").exists());
         assert_eq!(fs::read_to_string(root.join("outside.c")).unwrap(), "keep");
