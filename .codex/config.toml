@@ -1,8 +1,0 @@
-[[hooks.Stop]]
-
-[[hooks.Stop.hooks]]
-type = "command"
-command = 'node "$(git rev-parse --show-toplevel)/tools/verified-refactor-auto-commit.mjs" stop'
-command_windows = 'powershell -NoProfile -Command "$root = git rev-parse --show-toplevel; & node (Join-Path $root tools/verified-refactor-auto-commit.mjs) stop"'
-timeout = 30
-statusMessage = "Checking verified auto-commit"
